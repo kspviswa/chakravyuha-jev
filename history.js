@@ -258,6 +258,71 @@ function exportCsv() {
   URL.revokeObjectURL(a.href);
 }
 
+// ------------------------------------------------------- cumulative footer
+// Totals across the filtered view, plus mean ± sample stddev for the three
+// per-step rates. The rates are the honest ones to average: a 40-step run and a
+// 4-step run are not comparable on raw ms, but they are on ms/step.
+function cumulativeHtml(runs) {
+  const sum = (f) => runs.reduce((s, r) => s + (Number.isFinite(f(r)) ? f(r) : 0), 0);
+  const totalRuns = runs.length;
+  const totalSteps = sum((r) => r.steps);
+  const totalQuestions = sum((r) => r.questions);
+  const totalCalls = sum((r) => r.calls);
+  const tokensIn = sum((r) => r.tokensIn);
+  const tokensOut = sum((r) => r.tokensOut);
+  const totalCost = sum((r) => r.costUsd);
+  const totalMs = sum((r) => r.totalMs);
+  const reached = runs.filter((r) => r.outcome === 'reached').length;
+
+  const perStep = (r) => {
+    const s = Number.isFinite(r.steps) && r.steps > 0 ? r.steps : null;
+    return s ? {
+      ms: Number.isFinite(r.totalMs) ? r.totalMs / s : null,
+      q: Number.isFinite(r.questions) ? r.questions / s : null,
+      cost: Number.isFinite(r.costUsd) ? r.costUsd / s : null,
+    } : { ms: null, q: null, cost: null };
+  };
+
+  const stat = (key, mode, unit) => {
+    const s = summarize(runs.map((r) => perStep(r)[key]));
+    const num = (v) => (v === null || !Number.isFinite(v) ? '—' : (mode === 'sc' ? v.toFixed(3) : v.toFixed(1)));
+    if (s.n < 2) return `${num(s.mean)} ${unit} <em>(n&lt;2)</em>`;
+    return `${num(s.mean)} ± ${num(s.stddev)} ${unit} <em>(n=${s.n})</em>`;
+  };
+
+  const opt = summarize(runs.map((r) => (Number.isFinite(r.optimalityScore) ? r.optimalityScore : null)));
+
+  const tiles = [
+    ['runs recorded', String(totalRuns)],
+    ['reached the centre', `${reached} / ${totalRuns}${totalRuns ? ` · ${Math.round((reached / totalRuns) * 100)}%` : ''}`],
+    ['total steps', String(totalSteps)],
+    ['total questions', String(totalQuestions)],
+    ['total calls', String(totalCalls)],
+    ['total tokens · in / out', `${tokensIn} / ${tokensOut}`],
+    ['total spent', `$${totalCost.toFixed(6)}`],
+    ['total time', `${Math.round(totalMs)} ms`],
+  ];
+
+  const rates = [
+    ['ms / step', stat('ms', 'ms', 'ms')],
+    ['questions / step', stat('q', 'sc', '')],
+    ['cost / step', stat('cost', 'sc', '$')],
+    ['optimality', opt.n < 2
+      ? `${opt.mean === null ? '—' : opt.mean.toFixed(3)} <em>(n&lt;2)</em>`
+      : `${opt.mean.toFixed(3)} ± ${opt.stddev.toFixed(3)} <em>(n=${opt.n})</em>`],
+  ];
+
+  return `
+    <div class="cum-tiles">
+      ${tiles.map(([label, value]) => `
+        <div class="cum-tile"><span class="cum-label">${escapeHtml(label)}</span><span class="cum-value">${value}</span></div>`).join('')}
+    </div>
+    <div class="cum-tiles rates">
+      ${rates.map(([label, value]) => `
+        <div class="cum-tile"><span class="cum-label">${escapeHtml(label)}</span><span class="cum-value">${value}</span></div>`).join('')}
+    </div>`;
+}
+
 // ------------------------------------------------------------------ render
 function render() {
   populateFilters();
@@ -274,6 +339,8 @@ function render() {
 
   if (filtered.length === 0) {
     $('stats').innerHTML = emptyState;
+    $('cum-grid').innerHTML = '';
+    $('cum-note').textContent = '';
     renderTable([]);
     return;
   }
@@ -285,6 +352,9 @@ function render() {
     groups.get(k).push(r);
   }
   $('stats').innerHTML = statGridHtml([...groups.entries()]);
+  $('cum-grid').innerHTML = cumulativeHtml(filtered);
+  $('cum-note').textContent = `Totals over the ${filtered.length} run(s) currently shown`
+    + (filtered.length !== allRuns.length ? ` (of ${allRuns.length} recorded — clear the filters to see everything).` : '.');
   renderTable(filtered);
 }
 

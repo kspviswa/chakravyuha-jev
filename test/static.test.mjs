@@ -232,6 +232,80 @@ test('invariant: server.mjs carries no solver at all — there is no stub to hid
   assert.doesNotMatch(server, /optimalPath|chakraVerdict/, 'the shim never grades a run either');
 });
 
+test('docs: no stale PathPuzzle / grid / stub / replay language survives', () => {
+  const files = ['README.md', 'docs/API.md', 'docs/METRICS.md', 'package.json', 'index.html', 'history.html'];
+  // Prose may legitimately SAY there is no stub ("there is no stub mode") — what
+  // must be gone is every stale identifier and every claim that such a mode
+  // exists. So match identifiers, not the bare words.
+  const stale = [
+    /pathpuzzle/i,
+    /stubAnswer/,
+    /TYPESAFE_REPLAY/,
+    /mode:\s*['"](stub|replay)['"]/,
+    /['"]stub['"]\s*mode/i,
+    /replay\s+mode/i,
+    /grid_pathfinding/,
+    /skins\/(grid|gmaps|sim)/,
+    /lib\/geo/,
+    /record-(fixtures|geo-snapshots)/,
+  ];
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    for (const re of stale) {
+      assert.doesNotMatch(text, re, `${f}: stale pattern ${re}`);
+    }
+  }
+  // and the polar model is actually described
+  const api = fs.readFileSync(path.join(ROOT, 'docs', 'API.md'), 'utf8');
+  assert.match(api, /chakravyuha_policy/, 'the policy task id is documented');
+  assert.match(api, /no_key/, 'the keyless refusal is documented');
+  assert.match(api, /open_radial/, 'the polar state is documented');
+  assert.match(fs.readFileSync(path.join(ROOT, 'docs', 'METRICS.md'), 'utf8'), /sample/i,
+    'the metric definitions state the sample (n-1) convention');
+});
+
+test('package.json: renamed to chakravyuha and the deleted scripts are gone', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, 'chakravyuha', 'the package is renamed');
+  assert.match(pkg.description, /chakravyuha/i);
+  assert.match(pkg.description, /no pathfinding|Jev/i);
+  assert.ok(!pkg.dependencies && !pkg.devDependencies, 'zero runtime dependencies (spec §0)');
+  for (const gone of ['fixtures', 'geo-fixtures']) {
+    assert.equal(pkg.scripts[gone], undefined, `the ${gone} script is deleted`);
+  }
+  assert.ok(pkg.scripts.test && pkg.scripts.start, 'test and start remain');
+  assert.equal(pkg.engines.node, '>=20', 'Node ≥ 20');
+});
+
+test('LICENSES: the vendored Lucide set is credited with its ISC text', () => {
+  const lic = fs.readFileSync(path.join(ROOT, 'LICENSES.md'), 'utf8');
+  assert.match(lic, /Lucide/i);
+  assert.match(lic, /ISC/);
+  assert.match(lic, /1\.47\.0/);
+  assert.match(lic, /Permission to use, copy, modify/, 'the full licence text is present');
+});
+
+test('deleted: the old skins, geo code and fixture machinery are gone', () => {
+  for (const gone of [
+    'skins/grid.js', 'skins/gmaps.js', 'skins/sim.js', 'lib/geo.js', 'lib/board.js',
+    'fixtures/index.json', 'scripts/record-fixtures.mjs', 'scripts/record-geo-snapshots.mjs',
+    'test/geo.test.mjs', 'test/board.test.mjs', 'test/referee.test.mjs', 'test/jev.test.mjs',
+  ]) {
+    assert.ok(!fs.existsSync(path.join(ROOT, gone)), `${gone} must be deleted (spec §2)`);
+  }
+  // exactly one skin, and it is the chakravyuha
+  const skins = fs.readdirSync(path.join(ROOT, 'skins')).filter((f) => f.endsWith('.js'));
+  assert.deepEqual(skins, ['chakravyuha.js'], 'one skin remains');
+  assert.ok(fs.existsSync(path.join(ROOT, 'assets', 'abhimanyu.jpg')), 'the artwork is kept');
+});
+
+test('server: the geo route and the whole geo/Overpass surface are gone', () => {
+  const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
+  for (const gone of ['/api/geo', 'overpass', 'Overpass', 'geoJson', 'geojson', 'osm']) {
+    assert.ok(!server.includes(gone), `server.mjs must not mention ${gone}`);
+  }
+});
+
 test('docs: the README documents BYOK, the CORS finding, the shim and the chakravyuha', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   assert.match(readme, /BYOK/i);

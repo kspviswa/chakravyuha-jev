@@ -15,7 +15,7 @@ import {
 } from '../lib/chakra.js';
 import { chakraVerdict } from '../lib/referee.js';
 import { Animator } from '../lib/animator.js';
-import { drawTargetIcon, drawCrownIcon, drawSparklesIcon, drawSwordsIcon } from '../lib/icons.js';
+import { drawTargetIcon, drawIcon } from '../lib/icons.js';
 
 const MAX_LOGICAL = 720;
 const STEPS_PER_HOP = 180; // ms of tween per hop
@@ -286,7 +286,7 @@ export const chakraSkin = {
       ctx.fill();
       if (wR >= 11) {
         ctx.strokeStyle = 'rgba(24,10,10,0.85)';
-        drawSwordsIcon(ctx, p.x, p.y, wR * 1.5, Math.max(1, wR * 0.16));
+        drawIcon(ctx, 'swords', p.x, p.y, wR * 1.5, { color: 'rgba(24,10,10,0.85)', lineWidth: Math.max(1, wR * 0.16) });
       }
     }
 
@@ -383,7 +383,7 @@ export const chakraSkin = {
     // the crown badge
     ctx.strokeStyle = '#fbbf24';
     ctx.fillStyle = '#fbbf24';
-    drawCrownIcon(ctx, 0, -half - Math.max(4, 0.11 * unit), Math.max(6, 0.22 * unit), Math.max(1, 1.7 * this.dpr));
+    drawIcon(ctx, 'crown', 0, -half - Math.max(4, 0.11 * unit), Math.max(6, 0.22 * unit), { color: '#fbbf24', lineWidth: Math.max(1, 1.7 * this.dpr) });
     ctx.restore();
   },
 
@@ -398,7 +398,7 @@ export const chakraSkin = {
     ctx.globalAlpha = 1 - t;
     ctx.strokeStyle = COL.target;
     ctx.fillStyle = COL.target;
-    drawSparklesIcon(ctx, mid, mid, Math.max(10, unit * grow * 2.4), Math.max(1.5, 2 * this.dpr));
+    drawIcon(ctx, 'sparkles', mid, mid, Math.max(10, unit * grow * 2.4), { lineWidth: Math.max(1.5, 2 * this.dpr) });
     ctx.restore();
     if (typeof requestAnimationFrame !== 'undefined') {
       requestAnimationFrame(() => this._draw());

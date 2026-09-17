@@ -254,4 +254,5 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 ## Licence and credits
 
 MIT (see `LICENSE`). Icons are vendored from [Lucide](https://lucide.dev)
-(`lucide-static` v1.47.0), **ISC licence**.
+(`lucide-static` v1.47.0), **ISC licence** — see `LICENSES.md` for the full text and the
+list of glyphs. No runtime dependencies: Node's standard library only.

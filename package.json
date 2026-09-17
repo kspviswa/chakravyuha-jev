@@ -1,14 +1,13 @@
 {
-  "name": "jev-pathpuzzle",
-  "version": "0.1.0",
+  "name": "chakravyuha",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Path-puzzle demo: the game loop has NO pathfinding logic — it sends the board to Jev and applies the typed moves Jev returns.",
+  "description": "Chakravyuha — a polar ring-maze where every move is a Jev decision. No pathfinding in the game loop: the maze is serialised to text, sent to Jev, and the move Jev picks is applied verbatim, then checked by a referee.",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "fixtures": "node scripts/record-fixtures.mjs",
-    "geo-fixtures": "node scripts/record-geo-snapshots.mjs"
+    "verify": "node scripts/verify-browser.mjs"
   },
   "engines": {
     "node": ">=20"

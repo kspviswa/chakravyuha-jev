@@ -287,13 +287,29 @@ async function runViewport(cdp, base, vp, route) {
 
   // Hunt for a mid-tween frame: the sprite is genuinely between two cells.
   let midTween = null;
+  let teleported = false;
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const p = await evaluate(cdp, RENDER_PROBE);
-    if (p && p.fractional && !p.atCentre) { midTween = p; break; }
+    const p = await evaluate(cdp, `(() => {
+      const r = window.__chakraLastRender;
+      if (!r) return null;
+      return { ...r, frac: !Number.isInteger(r.pos.ring) || !Number.isInteger(r.pos.sector) };
+    })()`);
+    if (p) {
+      // THE INVARIANT: he can only be at the goal if he WALKED there — the last
+      // cell of his trail must be the centre. A sprite that appears at the goal
+      // before the trail reaches it has been teleported by a leaked route.
+      if (p.atCentre) {
+        const last = p.trailCells[p.trailCells.length - 1];
+        if (!last || last.ring !== 0 || last.sector !== 0) teleported = true;
+      }
+      if (p.frac && !p.atCentre && !midTween) midTween = p;
+    }
     if (p && p.verdict) break;
+    if (midTween) break;
     await new Promise((r) => setTimeout(r, 25));
   }
+  if (teleported) throw new Error('the sprite appeared at the goal without walking there — a route leaked into the render');
   if (!midTween) {
     const p = await evaluate(cdp, RENDER_PROBE);
     throw new Error(`never caught the sprite between two cells — the animation may not be running (state: ${JSON.stringify(p)})`);
@@ -361,7 +377,7 @@ async function runViewport(cdp, base, vp, route) {
   if (!/reaches the centre/.test(refText)) throw new Error('the referee panel did not grade the run');
   console.log('  referee graded the finished run: ok');
 
-  if (route.name === 'root') await shot(cdp, `run-complete-${vp.name}`);
+  if (route.name === 'root') await shot(cdp, `anim-settled-${vp.name}`);
 
   // ---- no horizontal scroll on a phone ------------------------------------
   const overflow = await evaluate(cdp, `document.documentElement.scrollWidth - document.documentElement.clientWidth`);
@@ -377,16 +393,32 @@ async function runViewport(cdp, base, vp, route) {
     const cards = document.querySelectorAll('.stat-card');
     const rows = document.querySelectorAll('#runs-table tbody tr');
     const empty = document.querySelector('.empty-state');
-    return { done: cards.length > 0 || !!empty, cards: cards.length, rows: rows.length, empty: !!empty };
+    const cum = document.querySelectorAll('#cum-grid .cum-tile');
+    const note = document.getElementById('cum-note');
+    return {
+      done: (cards.length > 0 && cum.length > 0) || !!empty,
+      cards: cards.length, rows: rows.length, empty: !!empty,
+      cumTiles: cum.length, note: note ? note.textContent : '',
+      cumText: document.getElementById('cum-grid') ? document.getElementById('cum-grid').innerText : '',
+    };
   })()`);
   if (hist.empty) throw new Error('the history page showed the empty state — expected accumulated runs');
   if (!(hist.cards >= 1 && hist.rows >= 1)) {
     throw new Error(`history rendered but is missing content (cards=${hist.cards}, rows=${hist.rows})`);
   }
+  // §9: the cumulative footer — totals including total tokens and $ spent, plus
+  // mean ± sample stddev.
+  if (!(hist.cumTiles >= 10)) throw new Error(`the cumulative footer is missing tiles (${hist.cumTiles})`);
+  for (const want of ['total spent', 'total tokens', 'ms / step', 'questions / step', 'optimality']) {
+    if (!hist.cumText.toLowerCase().includes(want)) {
+      throw new Error(`the cumulative footer is missing "${want}" (got: ${hist.cumText.replace(/\n/g, ' | ')})`);
+    }
+  }
+  if (!/\$\d/.test(hist.cumText)) throw new Error('the cumulative footer shows no dollar total');
   if (route.name === 'root') await shot(cdp, `history-${vp.name}`);
   const hOverflow = await evaluate(cdp, `document.documentElement.scrollWidth - document.documentElement.clientWidth`);
   if (hOverflow > 1) throw new Error(`history page horizontal overflow of ${hOverflow}px`);
-  console.log(`  history: ${hist.cards} stat card(s), ${hist.rows} run row(s), no overflow: ok`);
+  console.log(`  history: ${hist.cards} stat card(s), ${hist.rows} run row(s), ${hist.cumTiles} cumulative tile(s), no overflow: ok`);
 }
 
 // ---------------------------------------------------------------- server + prefix proxy

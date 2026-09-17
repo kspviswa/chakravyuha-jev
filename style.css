@@ -178,6 +178,16 @@ button.danger:hover{background:#2a1118}
 .metric-defs ul{margin:8px 0 0;padding-left:20px;color:#a9b1c4;font-size:13px;display:flex;flex-direction:column;gap:6px}
 .metric-defs code{font:12px var(--mono);background:#22262f;padding:1px 5px;border-radius:5px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;align-items:start}
+
+/* ---- cumulative footer (§9): totals + mean ± sample stddev ---- */
+.cumulative .cum-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.cumulative .cum-tiles.rates{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+.cum-tile{display:flex;flex-direction:column;gap:3px;background:#12151d;border:1px solid var(--line);
+  border-radius:10px;padding:9px 11px;min-width:0}
+.cum-label{font:11px var(--sans);color:var(--dim);letter-spacing:.03em;text-transform:uppercase}
+.cum-value{font:600 15px var(--mono);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cum-value em{font:400 11px var(--sans);color:var(--dim);font-style:normal}
+.cum-note{font:11.5px var(--sans);color:var(--dim);margin:10px 0 0}
+@media(max-width:520px){.cumulative .cum-tiles{grid-template-columns:repeat(2,1fr)}}
 .stat-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}
 .group-key{font:600 14px var(--mono);margin:0 0 10px;color:var(--ink)}
 .group-key em{color:var(--dim);font-style:normal;font-size:12px;margin-left:6px}
