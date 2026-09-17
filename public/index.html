@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PathPuzzle — the game loop has no logic</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>PathPuzzle</h1>
+    <span class="tag">every move is a Jev decision</span>
+  </div>
+  <div class="mode" id="mode">checking…</div>
+</header>
+
+<main>
+  <section class="board-wrap">
+    <canvas id="board" width="720" height="720"></canvas>
+    <div class="board-caption">
+      <span class="k"><i class="sw s"></i>S start</span>
+      <span class="k"><i class="sw d"></i>D goal</span>
+      <span class="k"><i class="sw w"></i># wall</span>
+      <span class="k"><i class="sw p"></i>Jev's path</span>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="controls">
+      <label>Difficulty
+        <select id="difficulty">
+          <option value="easy">Easy · 8×8</option>
+          <option value="medium" selected>Medium · 12×12</option>
+          <option value="hard">Hard · 16×16</option>
+        </select>
+      </label>
+      <button id="randomize" class="ghost">🎲 Randomize obstacles</button>
+      <button id="ask" class="primary">▶ Ask Jev for the path</button>
+      <label class="check"><input type="checkbox" id="heatmap" /> also ask per-cell “is this cell on the path?”</label>
+      <label class="check"><input type="checkbox" id="animate" checked /> animate the path</label>
+    </div>
+
+    <div class="meters">
+      <div class="meter"><span class="m-label">decision time</span><span class="m-val" id="m-ms">—</span></div>
+      <div class="meter"><span class="m-label">cost</span><span class="m-val" id="m-cost">—</span></div>
+      <div class="meter"><span class="m-label">questions in one call</span><span class="m-val" id="m-q">—</span></div>
+      <div class="meter"><span class="m-label">round trips</span><span class="m-val" id="m-rt">—</span></div>
+    </div>
+
+    <div class="block">
+      <h2>What Jev returned <em>(typed)</em></h2>
+      <div id="answers" class="answers empty">Nothing yet. Press “Ask Jev”.</div>
+    </div>
+
+    <div class="block">
+      <h2>Referee <em>(verification only)</em></h2>
+      <div id="referee" class="referee empty">—</div>
+    </div>
+
+    <details class="block">
+      <summary>What we sent (the state)</summary>
+      <pre id="state-pre">—</pre>
+    </details>
+  </aside>
+</main>
+
+<footer>
+  <span>No pathfinding algorithm runs in this page. The board is serialised, sent to Jev, and the returned direction list is applied verbatim.</span>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

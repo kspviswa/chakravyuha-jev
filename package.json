@@ -1,0 +1,13 @@
+{
+  "name": "jev-pathpuzzle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Path-puzzle demo: the game loop has NO pathfinding logic — it sends the board to Jev and applies the typed moves Jev returns.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
