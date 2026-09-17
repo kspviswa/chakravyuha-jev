@@ -175,6 +175,10 @@ test('a record containing apiKey / x-jev-key is stored WITHOUT them', async () =
     assert.ok(!serialized.includes('t0k3n'), 'authToken dropped');
     assert.ok(!serialized.includes('"token"'), 'token dropped');
     assert.equal(body.difficulty, 'medium', 'the legitimate fields survived');
+    // token COUNTS look credential-shaped but are validated metrics — they must
+    // survive the scrubber, or the history page loses its token column.
+    assert.equal(body.tokensIn, VALID_RUN.tokensIn, 'tokensIn is a metric, not a secret');
+    assert.equal(body.tokensOut, VALID_RUN.tokensOut, 'tokensOut is a metric, not a secret');
     // and the same holds for bytes on disk
     const onDisk = fs.readFileSync(ctx.runsFile, 'utf8');
     assert.ok(!onDisk.includes('sk-super-secret-abc'));

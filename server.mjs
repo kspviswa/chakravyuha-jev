@@ -217,6 +217,12 @@ const RUN_OUTCOMES = ['reached', 'stuck', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
 
+// Field names that LOOK credential-shaped but are legitimate, validated metrics.
+// `tokensIn` / `tokensOut` are numbers clamped by optionalNum(), so they can
+// never carry a credential — without this allowlist the scrubber silently ate
+// the token counts and the history page lost a whole column.
+const SAFE_METRIC_FIELDS = new Set(['tokensIn', 'tokensOut']);
+
 class BadRun extends Error {}
 
 /** strip any credential-shaped field names before anything else touches them */
@@ -224,7 +230,7 @@ function dropSecrets(obj, note) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (SECRET_FIELD.test(k)) { note.push(k); continue; }
+    if (SECRET_FIELD.test(k) && !SAFE_METRIC_FIELDS.has(k)) { note.push(k); continue; }
     out[k] = v;
   }
   return out;
