@@ -12,7 +12,7 @@ export const gridSkin = {
   id: 'grid',
   label: 'Grid',
 
-  mount(container) {
+  mount({ container }) {
     const wrap = document.createElement('div');
     wrap.className = 'skin-controls';
     wrap.innerHTML = `
