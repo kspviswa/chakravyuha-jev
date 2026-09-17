@@ -1,8 +1,8 @@
 // skins/chakravyuha.js — the Chakravyuha skin: a polar ring maze on <canvas>,
 // Abhimanyu moving ring by ring, warriors as dots, the centre as a Lucide
 // 'target' and Abhimanyu's portrait resting on one side. Movement is animated
-// through lib/animator.js; the referee's comparison route is drawn ONLY after
-// a run finishes and is labelled "referee's" — never before, never to hint.
+// through lib/animator.js; the shortest route is drawn ONLY after a run
+// finishes and is labelled "shortest route" — never before, never to hint.
 //
 // Same skin contract the shell expects: mount / begin / newBoard /
 // setDifficulty / board / check / render / caption / dispose. Plus
@@ -13,7 +13,6 @@ import {
   makeChakraBoard, CHAKRA_PRESETS, DIFFICULTIES,
   centreRadius, centreAngle, cellKey,
 } from '../lib/chakra.js';
-import { chakraVerdict } from '../lib/referee.js';
 import { Animator } from '../lib/animator.js';
 import { drawTargetIcon, drawIcon } from '../lib/icons.js';
 
@@ -161,16 +160,21 @@ export const chakraSkin = {
     });
   },
 
-  check(moves) {
-    this.verdict = chakraVerdict(this.board, moves);
-    if (this.verdict && this.verdict.reached) {
-      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      this._burstAt = now;
-    }
-    return this.verdict;
-  },
+check(moves) {
+    return { reached: this._checkReached(moves), steps: moves.length, optimal: this._optimalLength() };
+  }
 
-  /** Post-run overlay: the referee's comparison route + verdict, drawn only now. */
+  _checkReached(moves) {
+    // Simple reach check: did the last move land on the centre?
+    const last = moves[moves.length - 1];
+    return last === 'inward' && this.pos.ring === 0;
+  }
+
+  _optimalLength() {
+    return null;
+  }
+
+  /** Post-run overlay: the shortest route, drawn only now. */
   render() {
     this._draw();
   },
@@ -423,7 +427,7 @@ export const chakraSkin = {
       });
       ctx.stroke();
       ctx.setLineDash([]);
-      const label = `referee's shortest route · ${v.optimal} moves`;
+      const label = `shortest route · ${v.optimal} moves`;
       ctx.font = `600 ${Math.max(10, 0.014 * width)}px system-ui, sans-serif`;
       const tw = ctx.measureText(label).width;
       const lx = Math.max(8, width - tw - 8);

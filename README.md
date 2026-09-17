@@ -4,33 +4,33 @@ A browser labyrinth where **every move is a Jev decision**. Abhimanyu starts on 
 outermost ring of a *chakravyuha* — the concentric battle formation of the Mahabharata —
 and has to reach the **target at the centre** past the warriors standing in the rings.
 
-There is no A\*, no BFS, no heuristic in the game loop, and you can prove it: an invariant
+There is no pathfinding in the game loop, and you can prove it: an invariant
 test scans the source. The maze is serialised to text, sent to Jev, and the move Jev picks
-is applied **verbatim**. The app then *checks* the answer with a referee, and Abhimanyu
-**walks** the route one animated hop at a time.
+is applied **verbatim**. The app then draws the shortest route only after the run ends,
+and Abhimanyu **walks** that route one animated hop at a time.
 
 ```
-   difficulty (easy / medium / hard) + 🎲 New maze
-            │
-            ▼
-   state = { maze, open_radial, open_circ, warriors, abhimanyu, goal, rules }
-            +
-   questions = { move_inward, move_outward, move_clockwise, move_counterclockwise, … }
-            │                       ← one typed Noul per legal move
-            ▼
-   POST → /api/jev → TypeSafe → typed answers + probabilities
-            │
-            ▼
-   app applies Jev's argmax → Abhimanyu ANIMATES that one hop → ask again
-            │
-            ▼
-   referee.js checks: in bounds? walls? warriors? reached the centre? shortest?
-            │
-            ▼
-   meters + efficiency: ms/step · questions/step · tokens/step · $/step
-            │
-            ▼
-   the run is recorded server-side, so history accumulates across sessions
+    difficulty (easy / medium / hard) + 🎲 New maze
+             │
+             ▼
+    state = { maze, open_radial, open_circ, warriors, abhimanyu, centre, visited, step, maxSteps }
+             +
+    questions = { next_move: { type: 'choice', instructions: '...', criteria: {...} } }
+             │                       ← one typed choice per step
+             ▼
+    POST → /api/jev → TypeSafe → typed answer + probabilities
+             │
+             ▼
+    app applies Jev's answer → Abhimanyu ANIMATES that one hop → ask again
+             │
+             ▼
+    shortest route drawn only after the run ends, to compare
+             │
+             ▼
+    meters: outcome · steps vs shortest · step accuracy · elapsed · cost
+             │
+             ▼
+    the run is recorded server-side, so history accumulates across sessions
 ```
 
 ## The three difficulties
@@ -42,13 +42,11 @@ is applied **verbatim**. The app then *checks* the answer with a referee, and Ab
 | **Hard** | 8 × 20 | 26 | 0.06 |
 
 *Braid* is the fraction of still-closed walls re-opened after the maze is carved, so the
-maze keeps loops and several routes exist — which is what makes "did Jev find the shortest
-one?" a real question rather than a foregone one.
-
-Every maze is guaranteed solvable and deep enough to be worth asking about: generation
-carves a randomised spanning tree, braids it, then **places warriors one at a time,
-rejecting any placement that would sever the route to the centre**. A fresh maze is
-redrawn until the referee confirms it is solvable and at least `minSteps` from the goal.
+maze keeps loops and several routes exist. Every maze is guaranteed solvable and deep enough
+to be worth asking about: generation carves a **randomised DFS spanning tree** over centre
++R×S cells on a polar grid, then braids it, then places warriors one at a time, rejecting
+any placement that would sever the route to the centre. A fresh maze is redrawn until the
+shortest route is at least `minSteps` long and the warrior count is exact.
 `test/chakra.test.mjs` proves this over 200 seeded draws per level.
 
 ## Quickstart
@@ -91,11 +89,11 @@ Two rules keep it honest:
 
 - **The animation never reveals a route Jev has not chosen.** During a run the sprite
   animates exactly the hop that was decided; the route is discovered step by step. Feeding
-  it the referee's optimum would leak the answer into the render layer — the same bug as
+  it the shortest route would leak the answer into the render layer — the same bug as
   solving on load, in a new costume. `test/animation.test.mjs` drives a deliberately
-  wandering policy and asserts the sprite walked *that* route, not the referee's.
-- **The referee's route appears only after the run ends**, as a dashed line labelled
-  *"referee's shortest route"*, so the efficiency meter has a picture to compare against.
+  wandering policy and asserts the sprite walked *that* route, not the shortest.
+- **The shortest route appears only after the run ends**, as a dashed line labelled
+  *"shortest route · N moves"*, so the step-accuracy meter has a picture to compare against.
 
 Movement is queue-based and cancellable, and `prefers-reduced-motion` (or `?anim=0`, or
 `setAnimationDuration(0)`) snaps between cells for accessibility and deterministic tests.
@@ -109,57 +107,35 @@ contacted at runtime. The `target` glyph marks the goal at the centre, `crown` b
 Abhimanyu, `swords` marks warrior dots when they are large enough, and `sparkles` fires on
 arrival.
 
-## The referee (verification only)
+## The shortest route (drawn only after a run)
 
-`lib/referee.js` is the **only** place a route is ever computed, and it is never allowed to
-choose a move. It provides:
+`lib/chakra.js` contains `shortest()`, the only BFS search in the codebase. It is called
+by the shell **after a run ends** to compute the optimal route for the comparison overlay,
+and by maze generation to verify solvability. The game loop (`lib/jev.js`) never calls
+`shortest()` — an invariant test enforces this. The shortest route is drawn only once a
+run finishes, labelled **"shortest route · N moves"**.
 
-- `chakraNeighbours` — the legal moves from a cell (walls and warriors respected);
-- `chakraShortest` — BFS over the polar graph, for the post-run comparison;
-- `walkChakra` — replays a direction list and reports `hitWall` / `hitWarrior` / `offBoard`
-  / `reached` — the only place a move list is inspected for legality;
-- `chakraVerdict` — the graded verdict the UI shows;
-- `chakraQuality` — generation sanity: solvable, how far, and how many warriors actually
-  force a detour.
-
-An invariant test asserts no search algorithm exists anywhere else, and that the game loop
-never even asks the referee for a route.
-
-## Two modes: `policy` (default) and `plan`
-
-**`policy` — Jev as a reactive step policy.** *ask → apply → ask*. At each step the app
-enumerates the legal moves and sends **one `Noul` per candidate** — *"Abhimanyu is on ring
-3, sector 5; is moving inward to ring 2, sector 5 a good next step toward the centre?"* —
-then applies the highest-probability candidate and animates the hop. Enumerating the action
-space and taking an **argmax over Jev's own numbers is not searching**: no path is
-computed, no lookahead happens. A run that cannot proceed stops honestly — `stuck` (every
-neighbour already visited) or `exhausted` (the `2·R·S` step cap). There is no backtracking,
-by design.
-
-**`plan` — the old global ask, kept for comparison.** One call asking for move *k* of the
-whole route. Kept because it is the *evidence*: ask a System One model for a one-second
-snap judgment and it does well; ask it for multi-step global planning and its per-move
-confidence collapses while the global aggregates stay correct.
-
-## Metrics, efficiency and history
+## Metrics — how long, and how correct
 
 Every completed run is recorded **server-side** into `runs.jsonl` (one JSON object per
 line, append-only, capped at the most recent **500**, git-ignored) — so history survives a
-browser change and is visible from any device. The client computes the verdict and the
-meters; the server only whitelists fields, clamps numbers, drops credential-shaped keys,
+browser change and is visible from any device. The client computes the meters; the server
+only whitelists fields, clamps numbers, drops credential-shaped keys,
 **rejects any record whose mode is not `live`**, and stamps `id`/`at`. Recording is
 fire-and-forget and never alters the play flow's response.
 
 On the play page:
 
-| Meter | Meaning |
+| Meter | Definition |
 |---|---|
 | decision time · last step | the last call's wall time |
 | total time | the sum over every call |
 | calls made | round trips to Jev |
 | total cost | `$`, summed from every call |
-| questions per call | the fan-out in the last request |
-| steps vs optimal | the walk against the referee's BFS, `unreachable` when there is none |
+| questions per call | the number of questions in the most recent request (always 1) |
+| steps vs shortest | `steps / optimal`, where `optimal` is `shortest()`'s length |
+| **step accuracy** | **the fraction of steps that reduce the BFS distance to the centre by exactly 1** |
+| elapsed | wall-clock time for the whole run |
 
 And an **efficiency** block, every figure divided by the steps actually taken:
 `ms/step`, `questions/step`, `calls/step`, `tokens/step` (in / out), `cost/step`. The step
@@ -197,21 +173,25 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
 - `chakra.test.mjs` — polar geometry, adjacency, sector wrap, the single centre gate,
   warrior impassability, generation over 200 seeded draws per level, determinism, and the
   state sent to Jev (asserting no route leaks into it).
-- `referee-chakra.test.mjs` — BFS shortest route, detours forced by walls and warriors,
-  unreachable mazes, every walker verdict, and BFS/walker agreement over real mazes.
 - `policy.test.mjs` — the full polar policy loop against a mock upstream: optimal runs on
-  every level, honest meter summation (including the `output_tokens` regression),
-  stuck/exhausted stops, the reversal retry, and the `plan` builders.
+  every level, honest meter summation, stuck/exhausted/unparsed stops, the two mock-policy
+  regression runs (shortest-following and inward-greedy), and the `maxSteps` guard.
 - `animation.test.mjs` — polar interpolation and the short-way wrap, the queue, cancel,
   instant mode, **and the invariant that the sprite only ever follows Jev's own route**.
-- `no-stub.test.mjs` — no stub, no replay, no fixtures; no solver outside the referee; and
-  a keyless request is a `401 no_key` that never contacts the upstream.
-- `server` / `static` / `subpath` / `runs` / `stats` / `transport` / `debug-log` — the HTTP
-  layer, the asset allowlist, run-history validation, statistics and the redacted debug log.
+- `no-stub.test.mjs` — no stub, no replay, no fixtures; no search outside lib/chakra.js;
+  and a keyless request is a `401 no_key` that never contacts the upstream.
+- `static.test.mjs` — invariant that `lib/jev.js` must not reference `shortest`, and no
+  `referee` token anywhere in the repo.
+- `runs.test.mjs` — run-history validation, secret-key dropping, the 500-cap, corrupt
+  lines, restart survival, and the guarantee that recording never alters the play flow.
+- `server` / `static` / `subpath` / `transport` / `debug-log` / `stats` / `icons` — the
+  HTTP layer, the asset allowlist, the subpath proxy, the BYOK store, the redacted debug
+  log, and the vendored Lucide geometry.
 
 ## The request/response contract
 
 - `POST /api/jev` with `{ state, questions }` — a polar chakravyuha state.
+  `questions` contains exactly one `next_move` choice question per step.
 - Returns `{ answers, usage, _ms, _cost_usd, _questions, mode }`; errors are always
   `{ error: { code, message } }` — never a raw upstream blob.
 - `GET /api/health` → `{ ok: true, mode: "proxy", hasEnvKey: bool }`.
@@ -219,8 +199,8 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
 
 ## Debug logging
 
-`JEV_DEBUG=1` writes one redacted JSON line per `/api/jev` to **stderr** (so it lands in
-`journalctl -u abhimanyu`): request id, byte size, question count, `hasKey`, a **key
+`JEV_DEBUG=1` writes one redacted JSON line per `/api/jev` request to **stderr** (so it lands
+in `journalctl -u abhimanyu`): request id, byte size, question count, `hasKey`, a **key
 fingerprint** (first 4 chars + `sha256[0:8]`), the resolved mode, upstream status and
 duration, and on failure the truncated upstream body. The key itself is never logged, and
 `redact()` masks anything credential-shaped first.
@@ -233,15 +213,15 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 
 - `server.mjs` — static allowlist server + the `/api/jev` BYOK shim (proxy relay, rate
   limit, meters, structured errors) + `/api/runs`. **No solver, no stub, no replay.**
-- `app.js` — the shell: base path, keycard, mode badge, the policy/plan loops, meters and
-  efficiency, referee panel, Export run, fire-and-forget recording. No pathfinding.
+- `app.js` — the shell: base path, keycard, meters, the policy loop, step accuracy, and
+  fire-and-forget recording. No pathfinding.
 - `skins/chakravyuha.js` — the ring maze: walls, warrior dots, the Lucide target at the
-  centre, Abhimanyu as the animated sprite, the trail, and the post-run referee overlay.
-- `lib/chakra.js` — the polar model: presets, geometry, generation, serialisation.
-- `lib/referee.js` — **verification only**; the single home of the search.
+  centre, Abhimanyu as the animated sprite, the trail, and the post-run shortest route overlay.
+- `lib/chakra.js` — the polar model: presets, geometry, generation, adjacency, shortest BFS,
+  and the serialisation sent to Jev.
+- `lib/jev.js` — the polar state/question/answer builders and the policy loop.
 - `lib/animator.js` — the DOM-free movement queue (polar tween, short-way wrap, cancel).
 - `lib/icons.js` — vendored Lucide geometry (ISC) and canvas drawing.
-- `lib/jev.js` — the polar state/question/answer builders and the policy loop.
 - `lib/transport.js` — BYOK key store, proxy transport, base-path derivation.
 - `lib/stats.js` — pure statistics helpers (mean/median/sample variance/stddev/min/max).
 - `index.html`, `style.css` — the play page (Abhimanyu's portrait panel beside the maze,

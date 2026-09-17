@@ -37,11 +37,10 @@ export async function postJev(base, payload, opts = {}) {
   return { status: r.status, body };
 }
 
-// A valid polar chakravyuha state the shim will accept, with the full
-// first-step fan-out the policy loop actually sends.
+// A valid polar chakravyuha state the shim will accept.
 export const CH_PAYLOAD = {
   state: {
-    task: 'chakravyuha_policy',
+    task: 'chakravyuha_step',
     maze: { rings: 3, sectors: 6, centre_gate_sector: 2 },
     open_radial: [
       [true, true, true, true, true, true],
@@ -54,34 +53,28 @@ export const CH_PAYLOAD = {
     ],
     warriors: [{ ring: 2, sector: 5 }],
     abhimanyu: { ring: 3, sector: 0 },
-    goal: 'the centre (ring 0)',
+    centre: { ring: 0, sector: 0 },
     visited: [{ ring: 3, sector: 0 }],
     step: 1,
     maxSteps: 36,
     rules: 'polar moves: inward, outward, clockwise, counterclockwise',
-    objective: 'pick the best next move toward the centre',
+    objective: 'the first move of a shortest route from Abhimanyu to the centre',
   },
   questions: {
-    reachable: { type: 'noul', instructions: 'reachable?', criteria: { true: 'yes', false: 'no' } },
-    route_length: { type: 'choice', instructions: 'how long?', criteria: { '1-5': null, '6-10': null } },
-    maze_difficulty: { type: 'score', instructions: 'how hard?', criteria: ['easy', 'hard'] },
-    warriors_blocking: { type: 'noul', instructions: 'blocked?', criteria: { true: 'yes', false: 'no' } },
-    move_inward: { type: 'noul', instructions: 'good?' },
-    move_outward: { type: 'noul', instructions: 'good?' },
-    move_clockwise: { type: 'noul', instructions: 'good?' },
-    move_counterclockwise: { type: 'noul', instructions: 'good?' },
+    next_move: {
+      type: 'choice',
+      instructions: 'Which move is the FIRST move of a shortest route from Abhimanyu to the centre?',
+      criteria: { inward: 'ring 3 → ring 2, same sector', outward: 'ring 3 → ring 2, same sector', clockwise: 'sector 0 → sector 1, same ring' },
+    },
   },
 };
 
-// The same shape with exactly 4 questions — used by the debug-log test, which
+// The same shape with exactly 1 question — used by the debug-log test, which
 // asserts the logged `questions` count.
 export const SMALL_PAYLOAD = {
   state: CH_PAYLOAD.state,
   questions: {
-    reachable: { type: 'noul' },
-    move_inward: { type: 'noul' },
-    route_length: { type: 'choice' },
-    maze_difficulty: { type: 'score' },
+    next_move: { type: 'choice' },
   },
 };
 

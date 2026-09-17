@@ -10,10 +10,12 @@ animation: an animation that runs long must not inflate a Jev timing.
 |---|---|
 | **decision time · last step** | `_last_ms` — the wall time of the most recent `/api/jev` round trip. |
 | **total time** | Σ `_ms` over every call in the run. |
-| **calls made** | the number of `/api/jev` round trips. In `policy` mode this is ≥ the number of steps, because a rejected revisit costs an extra call. |
+| **calls made** | the number of `/api/jev` round trips. One call per step. |
 | **total cost** | Σ `_cost_usd`, 6 dp. |
-| **questions per call** | the number of questions in the most recent request. |
-| **steps vs optimal** | `steps / optimal`, where `optimal` is the referee's BFS length. `unreachable` when the referee finds no route (never `0/0`). |
+| **questions per call** | always 1 — one `next_move` choice question per step. |
+| **steps vs shortest** | `steps / optimal`, where `optimal` is `shortest()`'s length. `unreachable` when there is none. |
+| **step accuracy** | **the fraction of steps that reduce the BFS distance to the centre by exactly 1.** A step is correct when `dist(before) === dist(after) + 1`. `null` when no steps were taken. |
+| **elapsed** | wall-clock time for the whole run, measured in the shell around the loop. |
 
 ### Efficiency (per step)
 
@@ -28,15 +30,11 @@ denominator: a run that gives up after three hops must not look cheap.
 | **tokens / step · in / out** | `tokensIn / steps` and `tokensOut / steps` |
 | **cost / step** | `costUsd / steps` |
 
-### Scores
+## Scores
 
-- **optimality** = `optimalSteps / steps`, clamped to `[0, 1]`. **1.0 is perfect.**
-  - A run that did not reach the centre scores **0** (it did not do the job).
-  - A board with no route at all scores **`null`**, and is **excluded** from the mean
-    rather than counted as 0 — otherwise an impossible maze would drag the average down.
-- **accuracy** = `checksPassed / checksTotal` from the referee's verification checks.
-  `reached` is tracked separately, because "valid but never arrived" and "arrived" are
-  different failures and should not be conflated.
+- **step accuracy** = the fraction of steps on a shortest route. **1.0 is perfect.**
+  Computed post-run by the shell: `correctSteps / steps`.
+- `correctSteps` = the numerator of step accuracy (auditable).
 
 ## Costs
 
@@ -48,20 +46,21 @@ A single **blended** rate of **$0.042 per 1M tokens**, documented here rather th
 pretending to know the upstream's split pricing. Both token counts are summed from every
 call in the run — `output_tokens` is not assumed to be zero.
 
-## Honest stops
+## Outcomes
 
-A run ends in exactly one of four ways, and the label is never flattering:
+A run ends in exactly one of five ways, and the label is never flattering:
 
 | `outcome` | Meaning |
 |---|---|
 | `reached` | Abhimanyu arrived at the centre. |
 | `stuck` | every legal neighbour has already been visited — Jev has nowhere to go. |
+| `unparsed` | Jev's answer could not be read as one of the offered moves. |
 | `exhausted` | the step budget `2 · R · S` ran out. Generous but finite. |
 | `error` | the transport failed (e.g. `no_key`). The typed code is preserved. |
 
 ## Statistics (the history page)
 
-Grouped by **`difficulty · mode`** — different kinds of run are never averaged together.
+Grouped by **`difficulty`** — different kinds of run are never averaged together.
 
 | Statistic | Definition |
 |---|---|
@@ -83,7 +82,7 @@ spent**, and total time.
 
 Then the three per-step rates as **mean ± sample stddev**, because a 40-step run and a
 4-step run are not comparable on raw milliseconds but are on milliseconds per step:
-`ms / step`, `questions / step`, `cost / step`, and `optimality`. Each shows `(n = k)`, or
+`ms / step`, `questions / step`, `cost / step`, and `stepAccuracy`. Each shows `(n = k)`, or
 `(n<2)` when there is no spread to report.
 
 ## Units and rounding

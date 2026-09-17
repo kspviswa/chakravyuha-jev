@@ -32,29 +32,25 @@ x-jev-key: sk_…            (optional; the server-side env key is used when abs
 ```jsonc
 {
   "state": {
-    "task": "chakravyuha_policy",
+    "task": "chakravyuha_step",
     "maze": { "rings": 6, "sectors": 16, "centre_gate_sector": 7 },
     "open_radial": [[true, false, …], …],   // index i-1 = wall between ring i and ring i+1
     "open_circ":   [[true, false, …], …],   // index i-1 = ring i; index s = sector s ↔ s+1
     "warriors": [ { "ring": 3, "sector": 5 }, … ],
     "abhimanyu": { "ring": 6, "sector": 2 },
-    "goal": "the centre (ring 0)",
+    "centre": { "ring": 0, "sector": 0 },
     "visited": [ { "ring": 6, "sector": 2 }, … ],
     "step": 3,
     "maxSteps": 192,
     "rules": "…plain English: the four moves, the two wall arrays, sector wrap…",
-    "objective": "…a local ONE-STEP judgment, not a full route plan…",
-    "reversal": "clockwise"                  // optional, only after a rejected revisit
+    "objective": "…the first move of a shortest route from Abhimanyu to the centre…"
   },
   "questions": {
-    "move_inward":           { "type": "noul", "instructions": "…" },
-    "move_outward":          { "type": "noul", "instructions": "…" },
-    "move_clockwise":        { "type": "noul", "instructions": "…" },
-    "move_counterclockwise": { "type": "noul", "instructions": "…" },
-    "reachable":             { "type": "noul", "instructions": "…" },   // first step only
-    "route_length":          { "type": "choice", "criteria": { … } },   // first step only
-    "maze_difficulty":       { "type": "score",  "criteria": { … } },   // first step only
-    "warriors_blocking":     { "type": "noul", "instructions": "…" }    // first step only
+    "next_move": {
+      "type": "choice",
+      "instructions": "Abhimanyu is on ring 3, sector 5. The centre is ring 0, sector 0. The doors that are open from here and have not been visited yet lead to: inward → ring 2, sector 5; clockwise → ring 3, sector 6. Which move is the FIRST move of a shortest route from Abhimanyu to the centre?",
+      "criteria": { "inward": "ring 3 → ring 2, same sector", "clockwise": "sector 5 → sector 6, same ring" }
+    }
   }
 }
 ```
@@ -69,14 +65,13 @@ and the question count must not exceed the per-request cap. A bad payload is a
 {
   "model": "…",
   "answers": {
-    "move_inward": { "type": "noul", "noul": 0.83 },
-    "route_length": { "type": "choice", "choice": "9-16", "probabilities": { "1-5": 0.1, "9-16": 0.7 }, "confidence": 0.7 }
+    "step_1": { "type": "choice", choice: "inward", probabilities: { inward: 0.83 }, confidence: 0.83 }
   },
   "usage": { "input_tokens": 412, "output_tokens": 96 },
   "mode": "live",
   "_ms": 138,            // the shim's own wall-clock for the round trip
   "_cost_usd": 0.0000214, // ((in + out) / 1e6) × 0.042
-  "_questions": 4,
+  "_questions": 1,
   "_output_tokens": 96
 }
 ```
@@ -125,15 +120,16 @@ Record shape (all fields validated):
 {
   "difficulty": "easy|medium|hard",
   "mode": "live",
-  "outcome": "reached|stuck|exhausted|error",
+  "outcome": "reached|stuck|unparsed|exhausted|error",
   "rings": 4, "sectors": 12, "boardHash": "…",
   "steps": 12, "optimalSteps": 12,
   "totalMs": 812, "lastStepMs": 71, "msPerStep": 67.7,
-  "calls": 12, "questions": 4,
+  "calls": 12, "questions": 1,
   "tokensIn": 4944, "tokensOut": 1152,
   "costUsd": 0.000256,
-  "optimalityScore": 1, "accuracyScore": 1,
-  "model": "…", "id": "…", "at": "2026-09-17T21:04:11.512Z"
+  "stepAccuracy": 0.92, "correctSteps": 11, "moves": ["inward", "clockwise", …],
+  "elapsedMs": 4200,
+  "model": "…", "id": "…", "at": "2<|fim_hole|>
 }
 ```
 

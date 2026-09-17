@@ -14,7 +14,9 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createServer } from '../server.mjs';
-import { chakraNeighbours, chakraShortest } from '../lib/referee.js';
+import { makeChakraBoard } from '../lib/chakra.js';
+import { buildPolicyChakraState, chakraQuestions, legalCandidates } from '../lib/jev.js';
+import { shortest } from '../lib/chakra.js';
 
 const CHROME =
   process.env.CHROME_BIN ||
@@ -59,16 +61,25 @@ function startMockJev() {
           src: st.abhimanyu, dst: { ring: 0, sector: 0 },
         };
         const here = st.abhimanyu;
-        const s = chakraShortest(board, here, board.dst);
+        const visited = st.visited || [];
+        const visitedSet = new Set(visited.map((v) => `${v.ring},${v.sector}`));
+        const candidates = legalCandidates(board, here.ring, here.sector);
+        const fresh = candidates.filter((c) => !visitedSet.has(`${c.ring},${c.sector}`));
+        // Find the first move of a shortest route
+        const s = shortest(board, here, board.dst);
         const next = s ? s.path[1] : null;
-        for (const nb of chakraNeighbours(board, here.ring, here.sector)) {
-          const good = next && nb.ring === next.ring && nb.sector === next.sector;
-          answers[`move_${nb.dir}`] = { type: 'noul', noul: good ? 0.95 : 0.02 };
+        const criteria = {};
+        const parts = [];
+        for (const c of fresh) {
+          criteria[c.dir] = `${c.dir} to ring ${c.ring}, sector ${c.sector}`;
+          parts.push(`${c.dir} → ring ${c.ring}, sector ${c.sector}`);
         }
-        answers.reachable = { type: 'noul', noul: 1 };
-        answers.route_length = { type: 'choice', choice: '1-5', probabilities: { '1-5': 0.7 }, confidence: 0.7 };
-        answers.maze_difficulty = { type: 'score', score: 2, probabilities: { '2': 0.5 }, confidence: 0.5 };
-        answers.warriors_blocking = { type: 'noul', noul: 0.3 };
+        const choice = next ? next.dir : fresh[0]?.dir || 'inward';
+        answers.next_move = {
+          type: 'choice', choice,
+          probabilities: { [choice]: 0.95 },
+          confidence: 0.95,
+        };
       } catch { /* leave answers empty */ }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({

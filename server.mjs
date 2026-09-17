@@ -213,7 +213,7 @@ export const RUNS_CAP = 500;
 export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 
 const RUN_MODES = ['live'];
-const RUN_OUTCOMES = ['reached', 'stuck', 'exhausted', 'error'];
+const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
 
@@ -293,7 +293,8 @@ export function normaliseRunRecord(input) {
       ['optimalSteps', 0, 1e6], ['lastStepMs', 0, 1e9], ['msPerStep', 0, 1e9],
       ['calls', 0, 1e6], ['questions', 0, 1e6],
       ['tokensIn', 0, 1e10], ['tokensOut', 0, 1e10],
-      ['costUsd', 0, 1e6], ['optimalityScore', 0, 1], ['accuracyScore', 0, 1],
+      ['costUsd', 0, 1e6], ['stepAccuracy', 0, 1], ['correctSteps', 0, 1e6],
+      ['elapsedMs', 0, 1e12], ['moves', 0, 1e6],
     ]) {
       if (key in src) rec[key] = optionalNum(src, key, min, max);
     }

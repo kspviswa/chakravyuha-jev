@@ -51,16 +51,10 @@
       <div class="key-note" id="key-note">Checking the server…</div>
     </div>
 
-    <div class="modebar" id="mode-bar">
-      <button class="mode-btn" data-game-mode="policy" type="button">mode: policy · ask → apply → ask</button>
-      <button class="mode-btn" data-game-mode="plan" type="button">mode: plan · one global ask</button>
-    </div>
-    <div class="mode-note" id="mode-note"></div>
-
     <div class="controls" id="skin-controls"></div>
 
     <div class="cta">
-      <button id="ask" class="primary" type="button">▶ Ask Jev for the next moves</button>
+      <button id="ask" class="primary" type="button">▶ Ask Jev for the next move</button>
       <button id="cancel" class="ghost" type="button" hidden>■ Stop</button>
       <button id="export-btn" class="ghost" type="button" disabled>⇩ Export run</button>
     </div>
@@ -80,6 +74,8 @@
       <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
       <div class="meter"><span class="m-label">questions per call</span><span class="m-val" id="m-q">—</span></div>
       <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
+      <div class="meter"><span class="m-label">step accuracy</span><span class="m-val" id="m-stepacc">—</span></div>
+      <div class="meter"><span class="m-label">elapsed (wall clock)</span><span class="m-val" id="m-elapsed">—</span></div>
     </div>
 
     <div class="block">
@@ -98,11 +94,6 @@
       <div id="answers" class="answers empty">Nothing yet. Pick a difficulty and press “Ask Jev”.</div>
     </div>
 
-    <div class="block">
-      <h2>Referee <em>(verification only)</em></h2>
-      <div id="referee" class="referee empty">—</div>
-    </div>
-
     <details class="block">
       <summary>What we sent (the state)</summary>
       <pre id="state-pre">—</pre>
@@ -111,7 +102,7 @@
 </main>
 
 <footer>
-  <span>No pathfinding algorithm runs in this page. The maze is serialised, sent to Jev, and each move you see is the one Jev chose — animated hop by hop; the referee only verifies. The API key is yours. Without a key the server answers <code>401 no_key</code>.</span>
+  <span>No pathfinding algorithm runs in this page. The maze is serialised, sent to Jev, and every hop you see is the move Jev chose. The shortest route is drawn only after the run, to compare.</span>
 </footer>
 
 <script type="module" src="./app.js"></script>

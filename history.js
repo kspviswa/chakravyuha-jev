@@ -114,8 +114,7 @@ function populateFilters() {
 const METRICS = [
   { key: 'totalMs', label: 'speed · totalMs', round: 'ms' },
   { key: 'msPerStep', label: 'speed · ms/step', round: 'ms' },
-  { key: 'optimalityScore', label: 'optimality', round: 'sc' },
-  { key: 'accuracyScore', label: 'accuracy', round: 'sc' },
+  { key: 'stepAccuracy', label: 'step accuracy', round: 'sc' },
 ];
 
 function valueOf(run, key) {
@@ -167,7 +166,6 @@ function sortValue(run, col) {
     case 'mode': return run.mode;
     case 'outcome': return run.outcome;
     case 'steps': return Number.isFinite(run.steps) ? run.steps : -1;
-    case 'accuracy': return Number.isFinite(run.accuracyScore) ? run.accuracyScore : -1;
     case 'totalMs': return Number.isFinite(run.totalMs) ? run.totalMs : -1;
     case 'board': return String(run.rings || '');
     default: return 0;
@@ -207,7 +205,7 @@ function tableRows(runs) {
         <td>${escapeHtml(r.mode)}</td>
         <td>${outcomeHtml(r)}</td>
         <td>${stepsCell(r)}</td>
-        <td>${display(score(r.accuracyScore), 'sc')}</td>
+        <td>${display(r.stepAccuracy, 'sc')}</td>
         <td>${display(score(r.totalMs), 'ms')} ms</td>
         <td>${boardCell(r)}</td>
       </tr>`).join('');
@@ -235,12 +233,12 @@ function csvEscape(v) {
 
 function csvRows(runs) {
   const head = ['at', 'difficulty', 'mode', 'outcome', 'steps', 'optimalSteps',
-    'optimalityScore', 'accuracyScore', 'totalMs', 'msPerStep', 'lastStepMs',
+    'stepAccuracy', 'correctSteps', 'totalMs', 'msPerStep', 'lastStepMs',
     'calls', 'questions', 'tokensIn', 'tokensOut', 'costUsd',
     'rings', 'sectors', 'boardHash', 'model', 'id'];
   const rows = [...runs].sort(compare).map((r) => [
     r.at, r.difficulty, r.mode, r.outcome, r.steps, r.optimalSteps,
-    r.optimalityScore, r.accuracyScore, r.totalMs, msPerStep(r), r.lastStepMs,
+    r.stepAccuracy, r.correctSteps, r.totalMs, msPerStep(r), r.lastStepMs,
     r.calls, r.questions, r.tokensIn, r.tokensOut, r.costUsd,
     r.rings, r.sectors, r.boardHash, r.model, r.id,
   ]);
@@ -290,7 +288,7 @@ function cumulativeHtml(runs) {
     return `${num(s.mean)} ± ${num(s.stddev)} ${unit} <em>(n=${s.n})</em>`;
   };
 
-  const opt = summarize(runs.map((r) => (Number.isFinite(r.optimalityScore) ? r.optimalityScore : null)));
+  const opt = summarize(runs.map((r) => (Number.isFinite(r.stepAccuracy) ? r.stepAccuracy : null)));
 
   const tiles = [
     ['runs recorded', String(totalRuns)],
@@ -307,7 +305,7 @@ function cumulativeHtml(runs) {
     ['ms / step', stat('ms', 'ms', 'ms')],
     ['questions / step', stat('q', 'sc', '')],
     ['cost / step', stat('cost', 'sc', '$')],
-    ['optimality', opt.n < 2
+    ['step accuracy', opt.n < 2
       ? `${opt.mean === null ? '—' : opt.mean.toFixed(3)} <em>(n&lt;2)</em>`
       : `${opt.mean.toFixed(3)} ± ${opt.stddev.toFixed(3)} <em>(n=${opt.n})</em>`],
   ];
