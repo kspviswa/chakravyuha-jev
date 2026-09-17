@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PathPuzzle — every move is a Jev decision</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>PathPuzzle</h1>
+    <span class="tag">BYOK · two skins · every move is a Jev decision</span>
+  </div>
+  <div class="top-right">
+    <span class="transport-chip" id="transport-chip">transport: proxy</span>
+    <span class="mode" id="mode">ready</span>
+  </div>
+</header>
+
+<main>
+  <section class="board-wrap">
+    <canvas id="board" width="720" height="720" aria-label="puzzle board"></canvas>
+    <div class="board-caption" id="board-caption"></div>
+  </section>
+
+  <aside class="panel">
+    <div class="keycard">
+      <div class="keycard-title">Your TypeSafe API key <em>— bring your own (BYOK)</em></div>
+      <div class="keyrow">
+        <input type="password" id="key-field" placeholder="paste your key here — never written to disk unless you tick remember" autocomplete="off" spellcheck="false" />
+        <button id="forget-key" class="ghost" type="button">Forget key</button>
+      </div>
+      <div class="keyrow">
+        <label class="check"><input type="checkbox" id="remember-key" /> remember on this device (localStorage)</label>
+        <select id="transport" aria-label="transport">
+          <option value="proxy">transport: proxy (same-origin shim)</option>
+          <option value="direct">transport: direct (api.typesafe.ai — CORS-blocked today)</option>
+        </select>
+      </div>
+      <div class="stub-note" id="stub-note">Checking…</div>
+      <div class="direct-note" id="direct-note" hidden></div>
+    </div>
+
+    <div class="skinbar" id="skin-bar">
+      <button class="skin-btn" data-skin="grid" type="button">Grid puzzle</button>
+      <button class="skin-btn" data-skin="gmaps" type="button">🚗 Navigation</button>
+    </div>
+
+    <div class="controls" id="skin-controls"></div>
+
+    <div class="cta">
+      <button id="ask" class="primary" type="button">▶ Ask Jev for the path</button>
+      <button id="export-btn" class="ghost" type="button" disabled>⇩ Export run</button>
+    </div>
+
+    <div id="error-card" class="error-card" hidden>
+      <span class="ec-code" id="error-code"></span>
+      <span class="ec-msg" id="error-msg"></span>
+      <span class="ec-hint" id="error-hint"></span>
+    </div>
+
+    <div class="meters">
+      <div class="meter"><span class="m-label">decision time</span><span class="m-val" id="m-ms">—</span></div>
+      <div class="meter"><span class="m-label">cost</span><span class="m-val" id="m-cost">—</span></div>
+      <div class="meter"><span class="m-label">questions in one call</span><span class="m-val" id="m-q">—</span></div>
+      <div class="meter"><span class="m-label">round trips</span><span class="m-val" id="m-rt">—</span></div>
+    </div>
+
+    <div id="skin-result" class="block skin-result" hidden></div>
+
+    <div class="block">
+      <h2>What Jev returned <em>(typed)</em></h2>
+      <div id="answers" class="answers empty">Nothing yet. Press “Ask Jev”.</div>
+    </div>
+
+    <div class="block">
+      <h2>Referee <em>(verification only)</em></h2>
+      <div id="referee" class="referee empty">—</div>
+    </div>
+
+    <details class="block">
+      <summary>What we sent (the state)</summary>
+      <pre id="state-pre">—</pre>
+    </details>
+  </aside>
+</main>
+
+<footer>
+  <span>No pathfinding algorithm runs in this page. The board is serialised, sent to Jev, and the returned direction list is applied verbatim — the referee only verifies. The API key is yours; stub mode is the no-key default.</span>
+</footer>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

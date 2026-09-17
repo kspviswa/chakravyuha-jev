@@ -20,7 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   const { createServer } = await import('../server.mjs');
-  const { boardQuality } = await import('../public/referee.js');
+  const { boardQuality } = await import('../lib/referee.js');
+  const { buildGridState, buildGridQuestions } = await import('../lib/jev.js');
 
   const fixturesDir = path.join(__dirname, '..', 'fixtures');
   fs.mkdirSync(fixturesDir, { recursive: true });
@@ -57,56 +58,11 @@ async function main() {
   }
 
   function buildState(b) {
-    return {
-      task: 'grid_pathfinding',
-      grid: b.rows.map((row) => row.join('')),
-      legend: { S: 'source', D: 'destination', '#': 'wall (impassable)', '.': 'open cell' },
-      source: { row: b.src.r, col: b.src.c },
-      destination: { row: b.dst.r, col: b.dst.c },
-      rules: 'Grid coordinates are (row, col), 0-indexed, row 0 at the top. Moves are 4-directional. Diagonals are not allowed. Walls cannot be entered.',
-      objective: 'Find the shortest path from S to D, expressed as an ordered list of single-cell moves.',
-    };
+    return buildGridState(b);
   }
 
-  const DIR_OPTIONS = {
-    up: 'move one cell up',
-    down: 'move one cell down',
-    left: 'move one cell left',
-    right: 'move one cell right',
-    stop: 'the path has no more moves (you have already reached D)',
-  };
-
   function buildQuestions(b) {
-    const K = Math.min(b.R * b.C, 64);
-    const q = {
-      reachable: {
-        type: 'noul',
-        instructions: 'Is the destination D reachable from the source S without entering any wall?',
-        criteria: { true: 'a path from S to D exists', false: 'no path from S to D exists' },
-      },
-      path_length: {
-        type: 'choice',
-        instructions: 'How many single-cell moves does the shortest path from S to D take?',
-        criteria: { '1-5': null, '6-10': null, '11-15': null, '16-20': null, '21-30': null, '31-50': null, '51+': null },
-      },
-      maze_difficulty: {
-        type: 'score',
-        instructions: 'How hard is this maze to solve by eye?',
-        criteria: ['trivial', 'easy', 'moderate', 'hard', 'brutal'],
-      },
-    };
-    for (let k = 1; k <= K; k++) {
-      q[`move_${k}`] = {
-        type: 'choice',
-        instructions:
-          `Consider the shortest path from S to D on the grid in state.grid. ` +
-          `Movement is 4-directional (up, down, left, right), diagonals are not allowed, and walls (#) cannot be entered. ` +
-          `What is the direction of move number ${k} along that shortest path? ` +
-          `Answer "stop" if the shortest path contains fewer than ${k} moves.`,
-        criteria: DIR_OPTIONS,
-      };
-    }
-    return q;
+    return buildGridQuestions(b, false);
   }
 
   const SERVER_PORT = 0;

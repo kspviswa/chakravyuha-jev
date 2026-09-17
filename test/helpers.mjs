@@ -17,16 +17,41 @@ export async function stopServer(ctx) {
   await new Promise((resolve) => ctx.server.close(resolve));
 }
 
-export async function postJev(base, payload) {
+export async function postJev(base, payload, opts = {}) {
   const r = await fetch(`${base}/api/jev`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
     body: typeof payload === 'string' ? payload : JSON.stringify(payload),
   });
   let body = null;
   try { body = await r.json(); } catch { /* non-JSON */ }
   return { status: r.status, body };
 }
+
+// A weighted navigation board: S top-left, D top-right, a cheap corridor on
+// the bottom row vs a congested direct row. stubAnswer must route around.
+export const NAV_PAYLOAD = {
+  state: {
+    task: 'navigation_weighted',
+    grid: ['S.D', '...'],
+    weights: [[0, 9, 0], [1, 1, 1]],
+    legend: { S: 'pickup', D: 'drop-off', '.': 'road', weights: '1-5 congestion' },
+    source: { row: 0, col: 0 },
+    destination: { row: 0, col: 2 },
+    rules: 'Entering a cell costs its weight; start free.',
+    objective: 'least-cost route',
+  },
+  questions: {
+    reachable: { type: 'noul' },
+    cost_band: { type: 'choice' },
+    eta_band: { type: 'choice' },
+    route_difficulty: { type: 'score' },
+    move_1: { type: 'choice' },
+    move_2: { type: 'choice' },
+    move_3: { type: 'choice' },
+    move_4: { type: 'choice' },
+  },
+};
 
 // A small fixed board + question set shared by several tests.
 export const FIXED_PAYLOAD = {

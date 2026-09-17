@@ -1,17 +1,25 @@
-// server.mjs — static file server + a thin proxy for the TypeSafe API.
+// server.mjs — the same-origin shim: static files + `POST /api/jev`.
 //
-// Why a proxy at all: the TypeSafe API key must never reach the browser.
-// The browser POSTs the board to /api/jev; this process attaches the key.
+// Why the shim exists at all (a hard finding, documented in the README):
+// the TypeSafe API sends NO `Access-Control-Allow-Origin` for any origin and
+// rejects the preflight with `400 Disallowed CORS origin`, so a browser
+// page can never call `https://api.typesafe.ai/v1/systemone` directly. This
+// process is the necessary same-origin pass-through and nothing more.
 //
-// There are exactly three answer modes, surfaced to the UI via `mode`:
+// BYOK, server-side: the key comes from the BROWSER per request in the
+// `x-jev-key` header (proxy transport), falling back to an `Authorization:
+// Bearer` header, and then to an optional env `TYPESAFE_API_KEY`. The shim
+// stores nothing. The key is never logged and never echoed to the client.
 //
-//   STUB    no API key, no replay -> local BFS fakes a Jev-shaped answer.
-//           Not Jev. Labelled loudly. Confined to the stubAnswer() function.
-//   REPLAY  TYPESAFE_REPLAY set -> answer comes verbatim from a recorded
-//           fixture (deterministic, no key, no network).
-//   LIVE    TYPESAFE_API_KEY set, no replay -> real Jev, one request.
+// Answer modes, surfaced to the UI via the response `mode`:
+//   STUB    no key anywhere -> a local offline solver fakes a Jev-shaped
+//           answer. Not Jev. Labelled loudly. Confined to stubAnswer().
+//   REPLAY  TYPESAFE_REPLAY set -> a recorded fixture, verbatim.
+//   LIVE    any key present -> one forwarded request to TypeSafe.
 //
-// The API key is never logged and never returned to the client.
+// The stub solver (BFS for unweighted, Dijkstra for weighted congestion
+// maps) is the ONLY pathfinding outside lib/referee.js, and the live branch
+// below never calls it, so it never runs when a key is present.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -20,13 +28,18 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const PUBLIC = path.join(__dirname, 'public');
+export const STATIC_ROOT = __dirname;
 export const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 export const RECORDED_DIR = path.join(FIXTURES_DIR, 'recorded');
 
 export const UPSTREAM = 'https://api.typesafe.ai/v1/systemone';
 const PRICE_PER_MTOK = 0.042; // USD per 1M input tokens
 const PING = 0; // stub recordings pretend the round trip was instant
+
+// Only the client tree is served. server.mjs, package.json, test/, fixtures/,
+// .git/ … are deliberately NOT static assets.
+const STATIC_FILES = new Set(['index.html', 'app.js', 'style.css']);
+const STATIC_DIRS = new Set(['lib', 'skins']);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -35,6 +48,7 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.png': 'image/png',
 };
 
 export const ERROR_CODES = {
@@ -76,15 +90,23 @@ export function readConfig(env = process.env) {
 
 const AUTO_REPLAY = new Set(['1', 'true', 'yes', 'on']);
 
-/** Replay > live > stub. */
-export function resolveMode(config) {
+/** Replay > live > stub. A request-scoped key swings the live decision. */
+export function resolveMode(config, reqKey = '') {
   if (config.replay) return 'replay';
-  if (config.apiKey) return 'live';
+  if (reqKey || config.apiKey) return 'live';
   return 'stub';
 }
 
 function isAutoReplay(value) {
   return AUTO_REPLAY.has(String(value).toLowerCase());
+}
+
+function keyFromHeaders(headers) {
+  const x = headers['x-jev-key'];
+  if (x) return String(x).trim();
+  const auth = headers.authorization;
+  if (auth) return String(auth).replace(/^Bearer\s+/i, '').trim();
+  return '';
 }
 
 /** Stable id for a request: sha256 of the (state, questions) payload. */
@@ -154,53 +176,138 @@ export function decorateResponse(out, payload, ms) {
   return out;
 }
 
-// ---- stub: a local BFS that fakes a Jev-shaped answer --------------------
-// This is the ONE pathfinding implementation outside public/referee.js.
-// It is allowed (documented exception) but: it is confined to this function,
-// and the live branch below never calls it, so it never runs with a key set.
-export function stubAnswer(payload) {
-  const grid = payload.state.grid;
+// ---- the stub: a local offline solver that fakes a Jev-shaped answer ----
+// This is the ONE pathfinding implementation outside lib/referee.js. It is
+// allowed (documented exception) but: it is confined to this function, and
+// the live branch below never calls it, so it never runs with a key present.
+// BFS answers the unweighted grid questions; Dijkstra answers the weighted
+// "least-congestion" navigation questions. '#' and 'P' (park/buildings) block.
+
+const BLOCKED_CHARS = { '#': true, P: true };
+const DIRS = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
+
+function solveGrid(state) {
+  const grid = state.grid;
+  const weights = Array.isArray(state.weights) ? state.weights : null;
   const R = grid.length, C = grid[0].length;
   const find = (ch) => {
     for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c] === ch) return { r, c };
     return null;
   };
   const src = find('S'), dst = find('D');
-  const open = (r, c) => r >= 0 && r < R && c >= 0 && c < C && grid[r][c] !== '#';
-  const prev = new Map(), seen = new Set([`${src.r},${src.c}`]);
-  const q = [src];
-  const D = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
-  while (q.length) {
-    const cur = q.shift();
-    if (cur.r === dst.r && cur.c === dst.c) break;
-    for (const [name, [dr, dc]] of Object.entries(D)) {
-      const nr = cur.r + dr, nc = cur.c + dc, k = `${nr},${nc}`;
-      if (open(nr, nc) && !seen.has(k)) { seen.add(k); prev.set(k, { from: cur, dir: name }); q.push({ r: nr, c: nc }); }
+  if (!src || !dst) return { reached: false, moves: [], cost: 0 };
+  const open = (r, c) => r >= 0 && r < R && c >= 0 && c < C && !BLOCKED_CHARS[grid[r][c]];
+  if (!open(src.r, src.c) || !open(dst.r, dst.c)) return { reached: false, moves: [], cost: 0 };
+  const stepCost = (r, c) => (weights ? weights[r][c] : 1);
+
+  if (!weights) {
+    // ---- BFS: fewest moves
+    const prev = new Map();
+    const seen = new Set([`${src.r},${src.c}`]);
+    const q = [src];
+    let reached = false;
+    while (q.length) {
+      const cur = q.shift();
+      if (cur.r === dst.r && cur.c === dst.c) { reached = true; break; }
+      for (const [name, [dr, dc]] of Object.entries(DIRS)) {
+        const nr = cur.r + dr, nc = cur.c + dc, k = `${nr},${nc}`;
+        if (open(nr, nc) && !seen.has(k)) { seen.add(k); prev.set(k, { from: cur, dir: name }); q.push({ r: nr, c: nc }); }
+      }
+    }
+    const moves = [];
+    let cur = dst;
+    while (reached && !(cur.r === src.r && cur.c === src.c)) {
+      const p = prev.get(`${cur.r},${cur.c}`);
+      if (!p) { reached = false; break; }
+      moves.unshift(p.dir);
+      cur = p.from;
+    }
+    return { reached, moves, cost: moves.length };
+  }
+
+  // ---- Dijkstra: least congestion cost (enter a cell, pay its weight)
+  const INF = Infinity;
+  const dist = Array.from({ length: R }, () => new Array(C).fill(INF));
+  const prev = Array.from({ length: R }, () => new Array(C).fill(null)); // { r, c, dir }
+  const done = Array.from({ length: R }, () => new Array(C).fill(false));
+  dist[src.r][src.c] = 0;
+  let reached = false;
+  for (;;) {
+    let best = null;
+    for (let r = 0; r < R; r++)
+      for (let c = 0; c < C; c++)
+        if (!done[r][c] && dist[r][c] < INF && (best === null || dist[r][c] < dist[best[0]][best[1]])) {
+          best = [r, c];
+        }
+    if (best === null) break;
+    const [r, c] = best;
+    if (r === dst.r && c === dst.c) { reached = true; break; }
+    done[r][c] = true;
+    for (const [name, [dr, dc]] of Object.entries(DIRS)) {
+      const nr = r + dr, nc = c + dc;
+      if (!open(nr, nc)) continue;
+      const alt = dist[r][c] + stepCost(nr, nc);
+      if (alt < dist[nr][nc]) {
+        dist[nr][nc] = alt;
+        prev[nr][nc] = { r, c, dir: name };
+      }
     }
   }
   const moves = [];
-  let cur = dst, reached = seen.has(`${dst.r},${dst.c}`);
+  let cur = dst;
   while (reached && !(cur.r === src.r && cur.c === src.c)) {
-    const p = prev.get(`${cur.r},${cur.c}`);
+    const p = prev[cur.r][cur.c];
     if (!p) { reached = false; break; }
     moves.unshift(p.dir);
-    cur = p.from;
+    cur = p;
   }
+  return { reached, moves, cost: reached ? dist[dst.r][dst.c] : 0 };
+}
+
+const LENGTH_BUCKETS = [5, 10, 15, 20, 30, 50];
+const COST_BUCKETS = [20, 40, 60, 80, 100];
+
+function bucket(list, n) {
+  for (let i = 0; i < list.length; i++) if (n <= list[i]) return i === 0 ? `1-${list[i]}` : `${list[i - 1] + 1}-${list[i]}`;
+  return `${list[list.length - 1] + 1}+`;
+}
+
+function etaOf(cost) {
+  if (cost < 10) return 'under 10 min';
+  if (cost <= 20) return '10–20 min';
+  if (cost <= 30) return '20–30 min';
+  if (cost <= 45) return '30–45 min';
+  return '45+ min';
+}
+
+export function stubAnswer(payload) {
+  const { state } = payload;
+  const { reached, moves, cost } = solveGrid(state);
+  const weighted = Array.isArray(state.weights);
+
   const answers = {};
   for (const id of Object.keys(payload.questions)) {
-    if (id === 'reachable') answers[id] = { type: 'noul', noul: reached ? 0.99 : 0.01 };
-    else if (id === 'path_length') {
+    if (id === 'reachable') {
+      answers[id] = { type: 'noul', noul: reached ? 0.99 : 0.01 };
+    } else if (id === 'path_length') {
       const n = moves.length;
-      const bucket = n <= 5 ? '1-5' : n <= 10 ? '6-10' : n <= 15 ? '11-15' : n <= 20 ? '16-20' : n <= 30 ? '21-30' : n <= 50 ? '31-50' : '51+';
-      answers[id] = { type: 'choice', choice: bucket, probabilities: { [bucket]: 0.9 }, confidence: 0.9 };
-    } else if (id === 'maze_difficulty') {
-      answers[id] = { type: 'score', score: 2.0, legend: { '0': 'trivial', '1': 'easy', '2': 'moderate', '3': 'hard', '4': 'brutal' }, probabilities: { '2': 0.7 }, confidence: 0.7 };
+      answers[id] = { type: 'choice', choice: bucket(LENGTH_BUCKETS, n), probabilities: { [bucket(LENGTH_BUCKETS, n)]: 0.9 }, confidence: 0.9 };
+    } else if (id === 'cost_band') {
+      const b = bucket(COST_BUCKETS, cost);
+      answers[id] = { type: 'choice', choice: b, probabilities: { [b]: 0.9 }, confidence: 0.9 };
+    } else if (id === 'eta_band') {
+      const e = etaOf(cost);
+      answers[id] = { type: 'choice', choice: e, probabilities: { [e]: 0.9 }, confidence: 0.9 };
+    } else if (id.endsWith('_difficulty')) {
+      answers[id] = { type: 'score', score: weighted ? 3.0 : 2.0, legend: { '0': 'trivial', '1': 'easy', '2': 'moderate', '3': 'hard', '4': 'brutal' }, probabilities: { [weighted ? '3' : '2']: 0.7 }, confidence: 0.7 };
     } else if (id.startsWith('move_')) {
       const k = Number(id.slice(5));
       const m = moves[k - 1] || 'stop';
       answers[id] = { type: 'choice', choice: m, probabilities: { [m]: 0.93 }, confidence: 0.93 };
     } else if (id.startsWith('cell_')) {
       answers[id] = { type: 'noul', noul: 0.5 };
+    } else {
+      answers[id] = { type: 'choice', choice: 'yes', probabilities: { yes: 0.9 }, confidence: 0.9 };
     }
   }
   const input_tokens = Math.round((JSON.stringify(payload).length) / 4);
@@ -295,7 +402,7 @@ async function handleApiJev(req, res, config, rateLimited) {
     return err(res, 400, ERROR_CODES.BAD_REQUEST, 'request body is not valid JSON');
   }
   if (!isValidPayload(payload)) {
-    return err(res, 400, ERROR_CODES.BAD_REQUEST, 'expected { state: { grid: [strings] }, questions: {...} }');
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, 'expected { state: { grid: [strings], weights? }, questions: {...} }');
   }
 
   const questionCount = Object.keys(payload.questions).length;
@@ -304,9 +411,10 @@ async function handleApiJev(req, res, config, rateLimited) {
       `${questionCount} questions exceeds the per-request cap of ${config.maxQuestions}`);
   }
 
+  const reqKey = keyFromHeaders(req.headers);
   const hash = requestHash(payload);
   const t0 = Date.now();
-  const mode = resolveMode(config);
+  const mode = resolveMode(config, reqKey);
   let out;
 
   if (mode === 'replay') {
@@ -322,10 +430,11 @@ async function handleApiJev(req, res, config, rateLimited) {
     out.mode = 'stub';
     decorateResponse(out, payload, Date.now() - t0);
   } else {
+    const key = reqKey || config.apiKey;
     try {
       const r = await fetch(config.upstream, {
         method: 'POST',
-        headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
         body: JSON.stringify({ ...payload, model: payload.model || config.model }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -346,21 +455,39 @@ async function handleApiJev(req, res, config, rateLimited) {
 }
 
 function handleStatic(req, res, url) {
-  let p = url.pathname === '/' ? '/index.html' : url.pathname;
-  const file = path.join(PUBLIC, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
-  const rel = path.relative(PUBLIC, file);
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return err(res, 405, ERROR_CODES.FORBIDDEN, 'method not allowed on static assets');
+  }
+  let p = url.pathname;
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, 'badly encoded path');
+  }
+  if (p === '/') p = '/index.html';
+  const parts = p.split('/').filter(Boolean);
+  let file;
+  if (parts.length === 1) {
+    if (!STATIC_FILES.has(parts[0])) return err(res, 404, ERROR_CODES.NOT_FOUND, `not found: ${url.pathname}`);
+    file = path.join(STATIC_ROOT, parts[0]);
+  } else {
+    if (!STATIC_DIRS.has(parts[0])) return err(res, 404, ERROR_CODES.NOT_FOUND, `not found: ${url.pathname}`);
+    if (parts.some((part) => part === '..' || part === '.')) return err(res, 403, ERROR_CODES.FORBIDDEN, 'forbidden');
+    file = path.join(STATIC_ROOT, ...parts);
+  }
+  const rel = path.relative(STATIC_ROOT, file);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     return err(res, 403, ERROR_CODES.FORBIDDEN, 'forbidden');
   }
   fs.readFile(file, (readErr, data) => {
     if (readErr) return err(res, 404, ERROR_CODES.NOT_FOUND, `not found: ${url.pathname}`);
+    if (req.method === 'HEAD') return send(res, 200, '', 'text/plain; charset=utf-8');
     send(res, 200, data, MIME[path.extname(file)] || 'application/octet-stream');
   });
 }
 
 // ---- app & entry point ---------------------------------------------------
 export function createServer(config = readConfig()) {
-  const mode = resolveMode(config);
   const rateLimited = makeRateLimiter(config.rateLimit);
   return http.createServer((req, res) => {
     let url;
@@ -377,9 +504,8 @@ export function createServer(config = readConfig()) {
     if (url.pathname === '/api/health') {
       return send(res, 200, {
         ok: true,
-        stub: mode === 'stub',
-        mode,
-        model: mode === 'stub' ? 'STUB-LOCAL-SOLVER' : config.model,
+        mode: 'proxy',
+        hasEnvKey: !!config.apiKey,
       });
     }
     if (url.pathname.startsWith('/api/')) {
@@ -393,15 +519,15 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   const config = readConfig();
   const server = createServer(config);
-  const mode = resolveMode(config);
   server.listen(config.port, () => {
     console.log(`jev-pathpuzzle on http://localhost:${config.port}`);
-    if (mode === 'replay') {
+    if (config.replay) {
       console.log(`  mode: REPLAY${isAutoReplay(config.replay) ? ' (hash lookup)' : ` (named fixture "${config.replay}")`} — deterministic, no network`);
-    } else if (mode === 'live') {
-      console.log(`  mode: LIVE (${config.model})`);
+    } else if (config.apiKey) {
+      console.log('  mode: LIVE-capable (env key present; the browser may also send its own per-request key)');
     } else {
-      console.log('  mode: STUB — set TYPESAFE_API_KEY for live Jev');
+      console.log('  mode: STUB by default — paste a key in the page (BYOK) to go LIVE');
     }
+    console.log('  the shim exists because api.typesafe.ai sends no Access-Control-Allow-Origin (CORS finding)');
   });
 }

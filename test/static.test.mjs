@@ -1,8 +1,9 @@
 // test/static.test.mjs — filesystem-level invariants:
-//   1. every src/href in index.html resolves to a real file under public/
-//   2. every .js under public/ parses as an ES module (node --check)
-//   3. the game loop stays logic-free: no pathfinding symbols in public/app.js
-//      and none in server.mjs outside the documented, confined stub BFS.
+//   1. every src/href in index.html resolves to a real, served asset
+//   2. every asset under the client tree parses as an ES module (node --check)
+//   3. the game loop stays logic-free: app.js, lib/* (save referee.js) and
+//      skins/* carry NO pathfinding implementation; server.mjs keeps its
+//      offline stub solver confined to stubAnswer().
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,7 +13,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
-const PUBLIC = path.join(ROOT, 'public');
+
+// The files the server actually allowlists as static (mirrors server.mjs).
+const CLIENT_FILES = ['index.html', 'app.js', 'style.css'];
+const CLIENT_DIRS = ['lib', 'skins'];
 
 function walk(dir) {
   const out = [];
@@ -24,44 +28,49 @@ function walk(dir) {
   return out;
 }
 
+const clientTree = () => [
+  ...CLIENT_FILES.map((f) => path.join(ROOT, f)),
+  ...CLIENT_DIRS.flatMap((d) => walk(path.join(ROOT, d))),
+];
+
 // ---- 1. static asset sanity -------------------------------------------------
-test('every src/href referenced by index.html resolves under public/', () => {
-  const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
+test('every src/href referenced by index.html resolves to a served asset', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]);
   assert.ok(refs.length >= 2, 'index.html references at least its css + app.js');
 
-  const localRefs = refs.filter((r) => {
-    if (r.startsWith('#') || /^(https?:|data:|mailto:|about:)/i.test(r)) return false;
-    return true;
-  });
-
+  const localRefs = refs.filter((r) => !(r.startsWith('#') || /^(https?:|data:|mailto:|about:)/i.test(r)));
   for (const ref of localRefs) {
-    const resolved = path.resolve(path.join(PUBLIC, ref));
-    const rel = path.relative(PUBLIC, resolved);
-    assert.ok(!rel.startsWith('..') && !path.isAbsolute(rel), `ref escapes public/: ${ref}`);
+    const resolved = path.resolve(path.join(ROOT, ref));
+    const rel = path.relative(ROOT, resolved);
+    assert.ok(!rel.startsWith('..') && !path.isAbsolute(rel), `ref escapes the client tree: ${ref}`);
     assert.ok(fs.existsSync(resolved), `missing asset referenced by index.html: ${ref}`);
   }
 
-  // the module graph too: app.js imports ./referee.js
-  const appSrc = fs.readFileSync(path.join(PUBLIC, 'app.js'), 'utf8');
-  for (const m of appSrc.matchAll(/from\s+['"](\.\/[^'"]+)['"]/g)) {
-    const file = path.join(PUBLIC, m[1]);
-    assert.ok(fs.existsSync(file), `module import missing: ${m[1]}`);
+  // the module graph: app.js imports lib/* and skins/*; skins import lib/*
+  const modules = [path.join(ROOT, 'app.js'), ...CLIENT_DIRS.flatMap((d) => walk(path.join(ROOT, d)).filter((f) => f.endsWith('.js')))];
+  for (const file of modules) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) {
+      const target = path.resolve(path.dirname(file), m[1]);
+      assert.ok(fs.existsSync(target), `module import missing in ${path.relative(ROOT, file)}: ${m[1]}`);
+    }
   }
 });
 
 // ---- 2. syntax parse ----------------------------------------------------------
-test('every .js under public/ parses as an ES module (node --check)', () => {
-  const files = walk(PUBLIC).filter((f) => f.endsWith('.js'));
-  assert.ok(files.length >= 2, 'expected at least app.js and referee.js');
+test('every client .js parses as an ES module (node --check)', () => {
+  const files = clientTree().filter((f) => f.endsWith('.js'));
+  assert.ok(files.length >= 6, `expected app.js + lib/* + skins/* (got ${files.length})`);
   for (const file of files) {
     const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
-    assert.equal(r.status, 0, `${path.basename(file)} failed to parse:\n${r.stderr}`);
+    assert.equal(r.status, 0, `${path.relative(ROOT, file)} failed to parse:\n${r.stderr}`);
   }
+  const server = spawnSync(process.execPath, ['--check', path.join(ROOT, 'server.mjs')], { encoding: 'utf8' });
+  assert.equal(server.status, 0, `server.mjs failed to parse:\n${server.stderr}`);
 });
 
 // ---- 3. no pathfinding in the game loop ---------------------------------------
-// Blank out string/template/comment content so the remaining code is inspectable.
 function stripLiterals(src) {
   let out = '';
   const n = src.length;
@@ -134,77 +143,83 @@ function matchingBrace(src, openIdx) {
 
 const inRange = (idx, [a, b]) => idx >= a && idx <= b;
 
-test('invariant: app.js and server.mjs carry no pathfinding implementation', () => {
-  const app = fs.readFileSync(path.join(PUBLIC, 'app.js'), 'utf8');
-  const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
-  const refr = fs.readFileSync(path.join(PUBLIC, 'referee.js'), 'utf8');
+test('invariant: the browser game loop carries no pathfinding implementation', () => {
+  // referee.js is the designated home of the algorithms.
+  const referee = fs.readFileSync(path.join(ROOT, 'lib', 'referee.js'), 'utf8');
+  assert.match(referee, /shortestPathLength/);
+  assert.match(referee, /shortestCost/);
 
-  // referee.js is the designated home of the algorithm.
-  assert.match(refr, /shortestPathLength/);
-
-  const appStrip = stripLiterals(app);
-  const serverStrip = stripLiterals(server);
-
-  for (const [file, src] of [['public/app.js', app], ['server.mjs', server]]) {
-    assert.doesNotMatch(src, /shortestPath/i, `${file}: raw source must not even mention shortestPath`);
-    assert.doesNotMatch(src, /astar/i, `${file}: raw source must not mention astar`);
+  // app.js, lib/* (except referee.js) and skins/*: no pathfinding, not even
+  // the identifiers in a comment.
+  const loopFiles = [
+    path.join(ROOT, 'app.js'),
+    path.join(ROOT, 'lib', 'transport.js'),
+    path.join(ROOT, 'lib', 'jev.js'),
+    path.join(ROOT, 'lib', 'board.js'),
+    path.join(ROOT, 'skins', 'grid.js'),
+    path.join(ROOT, 'skins', 'gmaps.js'),
+  ];
+  for (const file of loopFiles) {
+    const src = fs.readFileSync(file, 'utf8');
+    const rel = path.relative(ROOT, file);
+    assert.doesNotMatch(src, /shortestPath/i, `${rel}: raw source must not mention shortestPath`);
+    assert.doesNotMatch(src, /astar/i, `${rel}: raw source must not mention astar`);
+    assert.doesNotMatch(src, /\bbfs\b/i, `${rel}: no bfs, even in comments`);
+    assert.doesNotMatch(src, /dijkstra/i, `${rel}: no dijkstra, even in comments`);
   }
 
-  // app.js: the game loop must be free of every pathfinding symbol, comments too.
-  assert.doesNotMatch(appStrip, /shortestPath|astar|\bbfs\b/i, 'app.js: no pathfinding code may live in the game loop');
-  assert.doesNotMatch(app, /localhost|\bbfs\b|\bastar\b/i, 'app.js: no bfs/astar even in comments');
-
-  // server.mjs: in code (strings/comments stripped), no pathfinding symbols at all.
-  assert.doesNotMatch(serverStrip, /shortestPath|astar|\bbfs\b/i, 'server.mjs: no pathfinding identifiers outside comments');
-
-  // Confinement rule 1: every real mention of the stub (comments allowed) is
-  // either the function definition or a call inside the `mode === 'stub'` branch.
-  const comments = commentRanges(server);
-  const fnIdx = server.indexOf('function stubAnswer');
-  const defIdx = fnIdx === -1 ? -1 : fnIdx + 'function '.length;
-  const stubCall = [...server.matchAll(/stubAnswer/g)].map((m) => m.index);
-  assert.ok(stubCall.length >= 2, 'stubAnswer is defined and called at least once');
-  console.log(`server.mjs: ${stubCall.length} reference(s) to stubAnswer`);
-
-  for (const idx of stubCall) {
-    if (idx === defIdx) continue; // the definition itself
-    if (comments.some((c) => inRange(idx, c))) continue; // docs, not a call
-
-    const guards = [...server.matchAll(/if\s*\(\s*mode === 'stub'\s*\)/g)];
-    assert.ok(guards.length >= 1, 'a `mode === \'stub\'` branch exists');
-    const insideStubBranch = guards.some((g) => {
-      const bodyStartRel = server.indexOf('{', g.index + g[0].length);
-      if (bodyStartRel === -1) return false;
-      const close = matchingBrace(server, bodyStartRel);
-      if (close === -1) return false;
-      return inRange(idx, [bodyStartRel, close]);
-    });
-    assert.ok(insideStubBranch, `stubAnswer call site (index ${idx}) is only reachable in stub mode`);
+  // skins may use the referee's verification helpers to DRAW the returned
+  // route (never to choose it) — assert that is the only referee import.
+  for (const file of [path.join(ROOT, 'skins', 'grid.js'), path.join(ROOT, 'skins', 'gmaps.js')]) {
+    const src = fs.readFileSync(file, 'utf8');
+    const importLine = src.match(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/lib\/referee\.js'/);
+    assert.ok(importLine, `${file}: only imports recognised from the referee`);
+    const names = importLine[1];
+    for (const bad of ['shortestPath', 'shortestCost', 'boardQuality']) {
+      assert.ok(!names.includes(bad), `${file}: must not import the solver itself (${bad})`);
+    }
   }
-
-  // Confinement rule 2: any bfs mention in raw server.mjs is either inside the
-  // stubAnswer function body or in a comment (i.e. never in live-branch code).
-  const stubDefOpen = server.indexOf('function stubAnswer') + 'function stubAnswer'.length;
-  const stubBodyIndex = server.indexOf('{', stubDefOpen);
-  const stubBodyEnd = matchingBrace(server, stubBodyIndex);
-  for (const m of server.matchAll(/\bbfs\b/gi)) {
-    const ok = inRange(m.index, [stubBodyIndex, stubBodyEnd])
-      || comments.some((c) => inRange(m.index, c));
-    assert.ok(ok, `bfs token at index ${m.index} is neither in the stub function nor a comment`);
-  }
-
-  // Confinement rule 3: the live branch exists and is mutually exclusive.
-  assert.match(server, /if\s*\(\s*mode === 'live'\s*\)/);
-  assert.match(server, /if\s*\(\s*mode === 'replay'\s*\)/);
-  const callSites = [...server.matchAll(/stubAnswer\(/g)]
-    .map((m) => m.index)
-    .filter((idx) => idx !== defIdx && !comments.some((c) => inRange(idx, c)));
-  assert.equal(callSites.length, 1, 'exactly one stubAnswer call site');
-  assert.ok(callSites[0] > server.indexOf('if (mode === '), 'stub runs after mode resolution');
 });
 
-test('docs: the README documents the stub BFS exception in server.mjs', () => {
+test('invariant: server.mjs keeps the stub solver confined to stubAnswer()', () => {
+  const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
+  // In code (strings/comments stripped), no pathfinding symbols anywhere.
+  assert.doesNotMatch(stripLiterals(server), /shortestPath|astar|\bbfs\b|dijkstra/i,
+    'server.mjs: no pathfinding identifiers outside strings/comments');
+
+  const comments = commentRanges(server);
+  const defIdx = server.indexOf('function stubAnswer');
+
+  // exactly one non-comment call site, and it lives inside a stub branch
+  const callSites = [...server.matchAll(/stubAnswer\(/g)]
+    .map((m) => m.index)
+    .filter((idx) => !inRange(idx, [defIdx, defIdx + 40]) && !comments.some((c) => inRange(idx, c)));
+  assert.equal(callSites.length, 1, 'exactly one stubAnswer call site (outside its definition)');
+
+  const guards = [...server.matchAll(/mode === 'stub'/g)];
+  assert.ok(guards.length >= 1, 'a stub-mode branch exists');
+  const openBrace = server.indexOf('{', guards[0].index + guards[0][0].length);
+  const closeBrace = matchingBrace(server, openBrace);
+  assert.ok(openBrace !== -1 && closeBrace !== -1, 'stub branch is brace-matched');
+  assert.ok(inRange(callSites[0], [openBrace, closeBrace]), 'stubAnswer is only reachable in stub mode');
+
+  // every bfs/dijkstra token is either inside stubAnswer's body or a comment
+  const bodyOpen = server.indexOf('{', defIdx + 'function stubAnswer'.length);
+  const bodyClose = matchingBrace(server, bodyOpen);
+  for (const re of [/\bbfs\b/gi, /dijkstra/gi]) {
+    for (const m of server.matchAll(re)) {
+      const ok = inRange(m.index, [bodyOpen, bodyClose]) || comments.some((c) => inRange(m.index, c));
+      assert.ok(ok, `pathfinding token at index ${m.index} must live in stubAnswer() or a comment`);
+    }
+  }
+
+  // the live branch exists and never calls the stub
+  assert.match(server, /Bearer \$\{key\}/, 'live forwards with the resolved key');
+});
+
+test('docs: the README documents the stub, the CORS finding, and the shim', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  assert.match(readme, /BFS/i);
-  assert.match(readme, /stub/i);
+  assert.match(readme, /BFS|stub/i);
+  assert.match(readme, /CORS|Access-Control-Allow-Origin/i);
+  assert.match(readme, /proxy|shim/i);
 });

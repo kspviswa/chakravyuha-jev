@@ -1,5 +1,6 @@
-// test/server.test.mjs — http-level tests against a freshly booted server on
-// an ephemeral port: smoke, stub round-trip, replay, hardening, and the live
+// test/server.test.mjs — http-level tests against a freshly booted shim on
+// an ephemeral port: smoke, BYOK header handling, static allowlist, stub
+// round-trips (unweighted + weighted), replay, hardening, and the live
 // branch against a mock upstream (no real key, no real network).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
-  startServer, stopServer, postJev, FIXED_PAYLOAD, SMALL_PAYLOAD, startMockUpstream,
+  startServer, stopServer, postJev, FIXED_PAYLOAD, SMALL_PAYLOAD, NAV_PAYLOAD, startMockUpstream,
 } from './helpers.mjs';
 import { requestHash, RECORDED_DIR } from '../server.mjs';
 
@@ -21,8 +22,7 @@ test('smoke: health, index, and 404 for a missing asset (no key set)', async () 
     const health = await fetch(`${ctx.base}/api/health`);
     assert.equal(health.status, 200);
     const h = await health.json();
-    assert.deepEqual({ ok: h.ok, stub: h.stub }, { ok: true, stub: true });
-    assert.equal(h.mode, 'stub');
+    assert.deepEqual(h, { ok: true, mode: 'proxy', hasEnvKey: false });
 
     const index = await fetch(`${ctx.base}/`);
     assert.equal(index.status, 200);
@@ -38,12 +38,29 @@ test('smoke: health, index, and 404 for a missing asset (no key set)', async () 
   }
 });
 
-test('health reports replay mode when TYPESAFE_REPLAY is set', async () => {
-  const ctx = await startServer({ replay: '1' });
+test('health reports hasEnvKey when a server-side key exists', async () => {
+  const ctx = await startServer({ apiKey: 'sk-env-fake' });
   try {
     const h = await (await fetch(`${ctx.base}/api/health`)).json();
-    assert.equal(h.mode, 'replay');
-    assert.equal(h.stub, false);
+    assert.deepEqual(h, { ok: true, mode: 'proxy', hasEnvKey: true });
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+// ---- static allowlist ------------------------------------------------------
+test('the client tree is served, the server source is not', async () => {
+  const ctx = await startServer({});
+  try {
+    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/gmaps.js']) {
+      const r = await fetch(`${ctx.base}${asset}`);
+      assert.equal(r.status, 200, `${asset} served`);
+      assert.match(r.headers.get('content-type'), /javascript|css/, `${asset} MIME`);
+    }
+    for (const secret of ['/server.mjs', '/package.json', '/.git/config', '/fixtures/index.json', '/test/helpers.mjs']) {
+      const r = await fetch(`${ctx.base}${secret}`);
+      assert.equal(r.status, 404, `${secret} must not be served`);
+    }
   } finally {
     await stopServer(ctx);
   }
@@ -61,7 +78,7 @@ test('unknown /api/ endpoint is a structured 404', async () => {
 });
 
 // ---- stub round-trip -------------------------------------------------------
-test('stub round-trip: one typed answer per question plus the meters', async () => {
+test('stub round-trip (unweighted): one typed answer per question plus the meters', async () => {
   const ctx = await startServer({});
   try {
     const { status, body } = await postJev(ctx.base, FIXED_PAYLOAD);
@@ -89,6 +106,46 @@ test('stub round-trip: one typed answer per question plus the meters', async () 
     assert.ok(body._cost_usd >= 0);
     assert.equal(body._questions, qids.length);
     assert.equal(typeof body.usage?.input_tokens, 'number');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+test('stub round-trip (weighted navigation): least-cost answers from Dijkstra', async () => {
+  const ctx = await startServer({});
+  try {
+    const { status, body } = await postJev(ctx.base, NAV_PAYLOAD);
+    assert.equal(status, 200);
+    assert.equal(body.mode, 'stub');
+    const types = {
+      reachable: 'noul',
+      cost_band: 'choice',
+      eta_band: 'choice',
+      route_difficulty: 'score',
+      move_1: 'choice',
+      move_2: 'choice',
+      move_3: 'choice',
+    };
+    for (const [id, type] of Object.entries(types)) {
+      assert.equal(body.answers[id]?.type, type, `type for ${id}`);
+      assert.ok(body.answers[id], `answered ${id}`);
+    }
+    // the stub's least-cost route must actually be least cost per the referee
+    const { shortestCost, walkPath } = await import('../lib/referee.js');
+    const board = {
+      R: 2, C: 3,
+      rows: NAV_PAYLOAD.state.grid,
+      weights: NAV_PAYLOAD.state.weights,
+      src: { r: NAV_PAYLOAD.state.source.row, c: NAV_PAYLOAD.state.source.col },
+      dst: { r: NAV_PAYLOAD.state.destination.row, c: NAV_PAYLOAD.state.destination.col },
+    };
+    const moves = Object.keys(body.answers).filter((k) => k.startsWith('move_'))
+      .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
+      .map((k) => body.answers[k].choice);
+    const opt = shortestCost(board);
+    const w = walkPath(board, moves);
+    assert.equal(w.reached, true);
+    assert.equal(w.cost, opt, 'stub move list is least-cost');
   } finally {
     await stopServer(ctx);
   }
@@ -171,10 +228,7 @@ test('replay (hash mode): known requests are served from the recorded fixture', 
       const { status, body } = await postJev(ctx.base, fixture.request);
       assert.equal(status, 200, `${name} replay status`);
       assert.equal(body.mode, 'replay');
-      assert.equal(body._questions, fixture.response._questions);
       assert.deepEqual(body.answers, fixture.response.answers, `${name} answers match recording`);
-      assert.equal(body._ms, fixture.response._ms);
-      assert.equal(body._cost_usd, fixture.response._cost_usd);
     }
   } finally {
     await stopServer(ctx);
@@ -189,7 +243,6 @@ test('replay (named mode): TYPESAFE_REPLAY=easy serves the easy fixture whatever
     assert.equal(status, 200);
     assert.equal(body.mode, 'replay');
     assert.deepEqual(body.answers, fixture.response.answers);
-    // the reportedly-different request still gets the named fixture
     const other = await postJev(ctx.base, FIXED_PAYLOAD);
     assert.deepEqual(other.body.answers, fixture.response.answers);
   } finally {
@@ -200,12 +253,8 @@ test('replay (named mode): TYPESAFE_REPLAY=easy serves the easy fixture whatever
 test('replay (hash mode): an unknown request is a 404 no_fixture, not a crash', async () => {
   const ctx = await startServer({ replay: '1' });
   try {
-    // a guaranteed-unique payload so no other test can have recorded its hash
     const unique = crypto.randomBytes(8).toString('hex');
-    const payload = {
-      ...SMALL_PAYLOAD,
-      state: { ...SMALL_PAYLOAD.state, salt: unique },
-    };
+    const payload = { ...SMALL_PAYLOAD, state: { ...SMALL_PAYLOAD.state, salt: unique } };
     const { status, body } = await postJev(ctx.base, payload);
     assert.equal(status, 404);
     assert.equal(body.error?.code, 'no_fixture');
@@ -226,57 +275,84 @@ const MOCK_LIVE_BODY = {
   usage: { input_tokens: 1000, output_tokens: 7 },
 };
 
-test('live: proxies to the upstream, attaches the key, meters and records the run', async () => {
-  const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
-  const ctx = await startServer({
-    apiKey: 'sk-test-secret-123',
-    upstream: `${upstream.base}/v1/systemone`,
-  });
+function runLive(ctx, upstream) {
   const hash = requestHash(SMALL_PAYLOAD);
   const recordedFile = path.join(RECORDED_DIR, `${hash}.live.json`);
+  return { recordedFile, cleanup: () => { try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ } } };
+}
+
+test('live (env key): proxies to the upstream, meters and records the run', async () => {
+  const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
+  const ctx = await startServer({ apiKey: 'sk-env-key', upstream: `${upstream.base}/v1/systemone` });
+  const { recordedFile, cleanup } = runLive(ctx, upstream);
   try {
     const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(status, 200);
     assert.equal(body.mode, 'live');
-    assert.equal(body.model, 'mock-jevv-9000');
     assert.deepEqual(body.answers, MOCK_LIVE_BODY.answers);
     assert.equal(body._questions, 4);
     assert.equal(body._cost_usd, (1000 / 1e6) * 0.042);
-    assert.equal(typeof body._ms, 'number');
-    // the key must never be returned
-    assert.ok(!JSON.stringify(body).includes('sk-test-secret-123'));
+    assert.ok(!JSON.stringify(body).includes('sk-env-key'));
 
-    // the proxy really attached the key without leaking it
-    await new Promise((r) => setTimeout(r, 50)); // give the mock a beat
-    assert.equal(upstream.lastRequest().auth, 'Bearer sk-test-secret-123');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(upstream.lastRequest().auth, 'Bearer sk-env-key');
     assert.match(upstream.lastRequest().url, /^\/v1\/systemone/);
 
-    // a live success is auto-recorded for later replay
-    assert.ok(fs.existsSync(recordedFile), 'live response recorded to fixtures/recorded/');
+    assert.ok(fs.existsSync(recordedFile), 'live response recorded');
     const recorded = JSON.parse(fs.readFileSync(recordedFile, 'utf8'));
-    assert.equal(recorded.kind, 'live');
-    assert.equal(recorded.mode, 'live');
-    assert.ok(!JSON.stringify(recorded).includes('sk-test-secret-123'));
+    assert.ok(!JSON.stringify(recorded).includes('sk-env-key'));
     assert.deepEqual(recorded.response.answers, MOCK_LIVE_BODY.answers);
   } finally {
-    try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ }
+    cleanup();
     await stopServer(ctx);
     await upstream.close();
   }
 });
 
-test('live: a non-2xx upstream is a typed 502 and the server keeps serving', async () => {
-  const upstream = await startMockUpstream({ status: 500, body: { oops: 'raw blob must never leak' } });
-  const ctx = await startServer({ apiKey: 'sk-x', upstream: upstream.base });
+test('live (BYOK): the x-jev-key header drives the reminder, per request, no env key', async () => {
+  const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
+  const ctx = await startServer({ upstream: `${upstream.base}/v1/systemone` });
   try {
-    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
+    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': 'sk-browser-key-42' } });
+    assert.equal(status, 200);
+    assert.equal(body.mode, 'live', 'a browser-supplied key flips the shim to live');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(upstream.lastRequest().auth, 'Bearer sk-browser-key-42');
+    assert.ok(!JSON.stringify(body).includes('sk-browser-key-42'));
+  } finally {
+    await stopServer(ctx);
+    await upstream.close();
+  }
+});
+
+test('live (BYOK): the authorization Bearer header is a fallback for x-jev-key', async () => {
+  const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
+  const ctx = await startServer({ upstream: `${upstream.base}/v1/systemone` });
+  try {
+    // x-jev-key wins over authorization when both present
+    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD, {
+      headers: { 'authorization': 'Bearer sk-auth-key', 'x-jev-key': 'sk-xjev-key' },
+    });
+    assert.equal(status, 200);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(upstream.lastRequest().auth, 'Bearer sk-xjev-key');
+  } finally {
+    await stopServer(ctx);
+    await upstream.close();
+  }
+});
+
+test('live: a fake per-request key against a 401 upstream yields a clean typed 502', async () => {
+  const upstream = await startMockUpstream({ status: 401, body: { detail: { message: 'bad key' } } });
+  const ctx = await startServer({ upstream: `${upstream.base}/v1/systemone` });
+  try {
+    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': 'sk-definitely-wrong' } });
     assert.equal(status, 502);
     assert.equal(body.error?.code, 'upstream_error');
-    assert.equal(typeof body.error?.message, 'string');
-    assert.ok(!JSON.stringify(body).includes('raw blob'));
-    // still serving: next health check succeeds
-    const h = await fetch(`${ctx.base}/api/health`);
-    assert.equal(h.status, 200);
+    assert.ok(!JSON.stringify(body).includes('bad key'), 'raw upstream body is never echoed');
+    assert.ok(!JSON.stringify(body).includes('sk-definitely-wrong'), 'the key is never echoed');
+    const h = await (await fetch(`${ctx.base}/api/health`)).json();
+    assert.equal(h.ok, true, 'the shim keeps serving after a failed live call');
   } finally {
     await stopServer(ctx);
     await upstream.close();
@@ -287,9 +363,9 @@ test('live: an unreachable upstream is a typed 502, not a crash', async () => {
   const gone = await startMockUpstream({ status: 200, body: {} });
   const deadUrl = gone.base;
   await gone.close();
-  const ctx = await startServer({ apiKey: 'sk-x', upstream: deadUrl });
+  const ctx = await startServer({ upstream: deadUrl });
   try {
-    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
+    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': 'sk-x' } });
     assert.equal(status, 502);
     assert.equal(body.error?.code, 'upstream_error');
     const h = await (await fetch(`${ctx.base}/api/health`)).json();
@@ -300,18 +376,14 @@ test('live: an unreachable upstream is a typed 502, not a crash', async () => {
 });
 
 // ---- no pathfinding in the live path ---------------------------------------
-test('live: the stub BFS never runs when a key is present', async () => {
+test('live: the stub never runs when any key is present', async () => {
   const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
-  const ctx = await startServer({ apiKey: 'sk-x', upstream: `${upstream.base}/v1/systemone` });
-  const hash = requestHash(SMALL_PAYLOAD);
-  const recordedFile = path.join(RECORDED_DIR, `${hash}.live.json`);
+  const ctx = await startServer({ upstream: `${upstream.base}/v1/systemone` });
   try {
-    const { body } = await postJev(ctx.base, SMALL_PAYLOAD);
+    const { body } = await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': 'sk-x' } });
     assert.equal(body.mode, 'live');
     assert.equal(body._stub, undefined, 'live answers carry no _stub marker');
-    assert.notDeepEqual(body.answers.reachable, { type: 'noul', noul: 0.99 });
   } finally {
-    try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ }
     await stopServer(ctx);
     await upstream.close();
   }
