@@ -11,6 +11,7 @@ import { verdict, walkPath } from '../lib/referee.js';
 export const gridSkin = {
   id: 'grid',
   label: 'Grid',
+  weighted: false,
 
   mount({ container }) {
     const wrap = document.createElement('div');

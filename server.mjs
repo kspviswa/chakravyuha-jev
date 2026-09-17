@@ -69,7 +69,11 @@ const DEFAULTS = {
   apiKey: '',
   model: 'jev-latest',
   replay: '',
-  rateLimit: 40,
+  // Policy mode issues ONE call per step (plus a re-ask per reversal), so a
+  // single Hard run can legitimately make 40–90 calls in a minute. The limit
+  // protects the server from abuse, not the user from themselves — keep it
+  // generous. Override with RATE_LIMIT.
+  rateLimit: 1200,
   maxBodyBytes: 2_000_000,
   maxQuestions: 512,
 };
@@ -83,6 +87,8 @@ export function readConfig(env = process.env) {
     rateLimit: Number(env.RATE_LIMIT || DEFAULTS.rateLimit),
     maxBodyBytes: DEFAULTS.maxBodyBytes,
     maxQuestions: DEFAULTS.maxQuestions,
+    // JEV_DEBUG=1/true/yes/on → one redacted JSON line per /api/jev to stderr
+    debug: env.JEV_DEBUG || '',
     // test-only override so the suite can point at a mock upstream
     upstream: env.TYPESAFE_UPSTREAM || UPSTREAM,
   };
@@ -123,8 +129,45 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.end(buf);
 }
 
-function err(res, status, code, message) {
-  return send(res, status, { error: { code, message } });
+function err(res, status, code, message, extra = {}) {
+  return send(res, status, { error: { code, message, ...extra } });
+}
+
+// ---- debug logging (JEV_DEBUG=1 → stderr, key-redacting) -------------------
+const DEBUG_ON = new Set(['1', 'true', 'yes', 'on']);
+
+export function debugEnabled(config) {
+  return DEBUG_ON.has(String(config?.debug ?? '').toLowerCase());
+}
+
+/** First 4 chars of the key + sha256[0:8]. Enables "which key was used?" without the key. */
+export function fingerprintKey(key) {
+  if (!key) return null;
+  const s = String(key);
+  const tail = crypto.createHash('sha256').update(s).digest('hex').slice(0, 8);
+  return `${s.slice(0, 4)}…${tail}`;
+}
+
+/** Mask anything that looks like a credential before it reaches a log. */
+export function redact(value) {
+  if (value === undefined || value === null) return value;
+  return String(value)
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1<redacted>')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-<redacted>')
+    .replace(/\b[A-Za-z0-9._~+/=-]{32,}\b/g, '<redacted-token>');
+}
+
+function truncate(value, max = 1024) {
+  const s = String(value);
+  return s.length > max ? `${s.slice(0, max)}…[${s.length - max} more chars]` : s;
+}
+
+/** One structured, redacted JSON line per finished /api/jev request. */
+function evlog(config, base, extra = {}) {
+  if (!debugEnabled(config)) return;
+  const line = { t: new Date().toISOString(), kind: 'jev', ...base, ...extra };
+  if (line.upstream !== undefined) line.upstream = redact(line.upstream);
+  console.error('[jev-debug] ' + JSON.stringify(line));
 }
 
 class BodyTooLargeError extends Error {
@@ -186,15 +229,26 @@ export function decorateResponse(out, payload, ms) {
 const BLOCKED_CHARS = { '#': true, P: true };
 const DIRS = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
 
-function solveGrid(state) {
+/**
+ * Solve from `state.position` (policy mode) or, when no position is given,
+ * from S (plan mode). BFS for unweighted grids, Dijkstra for weighted maps.
+ */
+function solveGrid(state, from = null) {
   const grid = state.grid;
   const weights = Array.isArray(state.weights) ? state.weights : null;
   const R = grid.length, C = grid[0].length;
+  // Cells travel in two shapes on purpose: the board/solver as `{r,c}`, the
+  // policy API (position, destination, neighbours) as `{row,col}`. Normalize
+  // once on entry so the BFS never sees undefined.
+  const cell = (p) => (p ? { r: p.row ?? p.r, c: p.col ?? p.c } : null);
   const find = (ch) => {
     for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) if (grid[r][c] === ch) return { r, c };
     return null;
   };
-  const src = find('S'), dst = find('D');
+  const src = cell(from || state.position || find('S'));
+  const dst = cell(state.destination) ||
+    find('D') ||
+    (typeof state.destination?.row === 'number' ? { r: state.destination.row, c: state.destination.col } : null);
   if (!src || !dst) return { reached: false, moves: [], cost: 0 };
   const open = (r, c) => r >= 0 && r < R && c >= 0 && c < C && !BLOCKED_CHARS[grid[r][c]];
   if (!open(src.r, src.c) || !open(dst.r, dst.c)) return { reached: false, moves: [], cost: 0 };
@@ -280,10 +334,71 @@ function etaOf(cost) {
   return '45+ min';
 }
 
+/** Cells of the optimal S→D route (from `moves`), or null when unreachable. */
+function routeCells(state, reached, moves, src) {
+  if (!reached) return null;
+  // `src` arrives in either shape: the board/solver uses `{r, c}`, while the
+  // policy API (position, neighbours) uses `{row, col}`. Normalize before use,
+  // or every cell below becomes NaN and the route silently matches nothing.
+  const origin = { row: src?.row ?? src?.r, col: src?.col ?? src?.c };
+  if (!Number.isFinite(origin.row) || !Number.isFinite(origin.col)) return null;
+  const cells = [{ row: origin.row, col: origin.col }];
+  let r = origin.row, c = origin.col;
+  for (const m of moves) {
+    const d = DIRS[m];
+    if (!d) break;
+    r += d[0]; c += d[1];
+    cells.push({ row: r, col: c });
+  }
+  return cells;
+}
+
+/**
+ * Policy (per-step) answers: a single `move_<dir>` Noul. The stub is the one
+ * place allowed to do pathfinding, so it answers as a near-perfect driver:
+ * walking the known optimal route scores highest; anything else is scored by
+ * remaining cost; already-visited and illegal targets are penalised hard.
+ */
+export function policyMoveAnswer(state, dir, route) {
+  const grid = state.grid;
+  const weights = Array.isArray(state.weights) ? state.weights : null;
+  const R = grid.length, C = grid[0].length;
+  const pos = state.position || { row: 0, col: 0 };
+  const d = DIRS[dir];
+  if (!d) return 0.01;
+  const nr = pos.row + d[0], nc = pos.col + d[1];
+  if (nr < 0 || nr >= R || nc < 0 || nc >= C) return 0.01;
+  if (BLOCKED_CHARS[grid[nr][nc]]) return 0.01;
+
+  const visited = new Set((state.visited || []).map((v) => `${v.row},${v.col}`));
+  let score;
+  if (route) {
+    const posIdx = route.findIndex((p) => p.row === pos.row && p.col === pos.col);
+    const nextIdx = route.findIndex((p) => p.row === nr && p.col === nc);
+    if (posIdx >= 0 && nextIdx === posIdx + 1) {
+      score = 0.95; // keep walking the optimal route
+    } else {
+      const sub = solveGrid(state, { row: nr, col: nc });
+      const rem = weights ? sub.cost : sub.moves.length;
+      score = sub.reached ? 0.05 + 0.4 * (1 / (1 + (rem || 0))) : 0.02;
+    }
+  } else {
+    score = 0.05;
+  }
+  if (visited.has(`${nr},${nc}`)) score -= 0.6;
+  return Math.max(0.01, Math.min(0.95, score));
+}
+
 export function stubAnswer(payload) {
   const { state } = payload;
+  const src = state.position || (() => {
+    for (let r = 0; r < state.grid.length; r++) for (let c = 0; c < state.grid[0].length; c++)
+      if (state.grid[r][c] === 'S') return { r, c };
+    return null;
+  })();
   const { reached, moves, cost } = solveGrid(state);
   const weighted = Array.isArray(state.weights);
+  const route = routeCells(state, reached, moves, src);
 
   const answers = {};
   for (const id of Object.keys(payload.questions)) {
@@ -302,8 +417,15 @@ export function stubAnswer(payload) {
       answers[id] = { type: 'score', score: weighted ? 3.0 : 2.0, legend: { '0': 'trivial', '1': 'easy', '2': 'moderate', '3': 'hard', '4': 'brutal' }, probabilities: { [weighted ? '3' : '2']: 0.7 }, confidence: 0.7 };
     } else if (id.startsWith('move_')) {
       const k = Number(id.slice(5));
-      const m = moves[k - 1] || 'stop';
-      answers[id] = { type: 'choice', choice: m, probabilities: { [m]: 0.93 }, confidence: 0.93 };
+      if (Number.isFinite(k)) {
+        // plan mode: move number k along the global route, or "stop"
+        const m = moves[k - 1] || 'stop';
+        answers[id] = { type: 'choice', choice: m, probabilities: { [m]: 0.93 }, confidence: 0.93 };
+      } else {
+        // policy mode: a single per-step Noul for the candidate `dir`
+        const p = policyMoveAnswer(state, id.slice(5), route);
+        answers[id] = { type: 'noul', noul: p };
+      }
     } else if (id.startsWith('cell_')) {
       answers[id] = { type: 'noul', noul: 0.5 };
     } else {
@@ -381,7 +503,12 @@ function isValidPayload(payload) {
 
 async function handleApiJev(req, res, config, rateLimited) {
   const ip = req.socket.remoteAddress || 'x';
+  const rid = crypto.randomBytes(4).toString('hex');
+  const t0 = Date.now();
+  const log = (extra) => evlog(config, { rid, ip }, extra);
+
   if (rateLimited(ip)) {
+    log({ ok: false, code: ERROR_CODES.RATE_LIMITED, ms: Date.now() - t0 });
     return err(res, 429, ERROR_CODES.RATE_LIMITED, 'too many requests from this address — wait a minute and retry');
   }
 
@@ -390,8 +517,10 @@ async function handleApiJev(req, res, config, rateLimited) {
     raw = await readBody(req, config.maxBodyBytes);
   } catch (e) {
     if (e instanceof BodyTooLargeError) {
+      log({ ok: false, code: ERROR_CODES.PAYLOAD_TOO_LARGE, ms: Date.now() - t0 });
       return err(res, 413, ERROR_CODES.PAYLOAD_TOO_LARGE, `request body exceeds the ${config.maxBodyBytes}-byte cap`);
     }
+    log({ ok: false, code: ERROR_CODES.BAD_REQUEST, ms: Date.now() - t0 });
     return err(res, 400, ERROR_CODES.BAD_REQUEST, `could not read request body: ${e.message}`);
   }
 
@@ -399,38 +528,49 @@ async function handleApiJev(req, res, config, rateLimited) {
   try {
     payload = JSON.parse(raw.toString('utf8'));
   } catch {
+    log({ ok: false, code: ERROR_CODES.BAD_REQUEST, bytes: raw.length, ms: Date.now() - t0 });
     return err(res, 400, ERROR_CODES.BAD_REQUEST, 'request body is not valid JSON');
   }
   if (!isValidPayload(payload)) {
+    log({ ok: false, code: ERROR_CODES.BAD_REQUEST, bytes: raw.length, ms: Date.now() - t0 });
     return err(res, 400, ERROR_CODES.BAD_REQUEST, 'expected { state: { grid: [strings], weights? }, questions: {...} }');
   }
 
   const questionCount = Object.keys(payload.questions).length;
   if (questionCount > config.maxQuestions) {
+    log({ ok: false, code: ERROR_CODES.TOO_MANY_QUESTIONS, bytes: raw.length, questions: questionCount, ms: Date.now() - t0 });
     return err(res, 400, ERROR_CODES.TOO_MANY_QUESTIONS,
       `${questionCount} questions exceeds the per-request cap of ${config.maxQuestions}`);
   }
 
   const reqKey = keyFromHeaders(req.headers);
+  const key = reqKey || config.apiKey;
   const hash = requestHash(payload);
-  const t0 = Date.now();
   const mode = resolveMode(config, reqKey);
+  const base = {
+    rid, ip, bytes: raw.length, questions: questionCount,
+    hasKey: !!key, keyFp: fingerprintKey(key), mode,
+  };
+
   let out;
 
   if (mode === 'replay') {
     const hit = await findFixture(config, hash);
     if (!hit) {
+      log({ ...base, ok: false, code: ERROR_CODES.NO_FIXTURE, ms: Date.now() - t0 });
       return err(res, 404, ERROR_CODES.NO_FIXTURE,
         'no recorded fixture matches this request hash — run once in LIVE or STUB mode to record one');
     }
     const envelope = JSON.parse(hit.raw);
     out = { ...envelope.response, mode: 'replay' };
+    log({ ...base, ok: true, ms: Date.now() - t0, upstream: `<replay:${hit.file.split('/').pop()}>` });
   } else if (mode === 'stub') {
     out = stubAnswer(payload);
     out.mode = 'stub';
     decorateResponse(out, payload, Date.now() - t0);
+    log({ ...base, ok: true, ms: Date.now() - t0, upstream: '<stub>' });
   } else {
-    const key = reqKey || config.apiKey;
+    const upT0 = Date.now();
     try {
       const r = await fetch(config.upstream, {
         method: 'POST',
@@ -438,15 +578,41 @@ async function handleApiJev(req, res, config, rateLimited) {
         body: JSON.stringify({ ...payload, model: payload.model || config.model }),
         signal: AbortSignal.timeout(30_000),
       });
+      const upMs = Date.now() - upT0;
       if (!r.ok) {
-        await r.text(); // drain; the raw upstream body is never echoed to the client
-        return err(res, 502, ERROR_CODES.UPSTREAM_ERROR, `upstream TypeSafe API returned HTTP ${r.status}`);
+        // The raw upstream body goes to the DEBUG LOG (truncated + redacted)
+        // so a failed deploy can be diagnosed from the journal — but never to
+        // the client: the client error carries only a sanitized message.
+        const upstreamText = await r.text().catch(() => '');
+        const upstreamStatus = r.status;
+        const hint = upstreamStatus === 401
+          ? 'cannot authenticate — check your API key'
+          : upstreamStatus === 403
+            ? 'forbidden — check your API key and permissions'
+            : upstreamStatus === 429
+              ? 'rate limited by the upstream'
+              : upstreamStatus === 400
+                ? 'the upstream rejected the payload'
+                : 'upstream error';
+        const upstreamMessage = `upstream TypeSafe API returned HTTP ${upstreamStatus} — ${hint}`;
+        log({
+          ...base, ok: false, code: ERROR_CODES.UPSTREAM_ERROR,
+          upStatus: upstreamStatus, upMs,
+          upstream: truncate(upstreamText, 1024),
+          ms: Date.now() - t0,
+        });
+        return err(res, 502, ERROR_CODES.UPSTREAM_ERROR, upstreamMessage, { upstreamStatus });
       }
       out = await r.json();
       out.mode = 'live';
       decorateResponse(out, payload, Date.now() - t0);
       await recordLive(hash, payload, out);
+      log({
+        ...base, ok: true, upStatus: r.status, upMs, ms: Date.now() - t0,
+        upstream: `<live ok, ${Object.keys(out.answers || {}).length} answers>`,
+      });
     } catch (e) {
+      log({ ...base, ok: false, code: ERROR_CODES.UPSTREAM_ERROR, ms: Date.now() - t0 });
       return err(res, 502, ERROR_CODES.UPSTREAM_ERROR, `upstream TypeSafe API unreachable: ${e.message}`);
     }
   }
@@ -529,5 +695,6 @@ if (isMain) {
       console.log('  mode: STUB by default — paste a key in the page (BYOK) to go LIVE');
     }
     console.log('  the shim exists because api.typesafe.ai sends no Access-Control-Allow-Origin (CORS finding)');
+    if (debugEnabled(config)) console.log('  JEV_DEBUG=1 — one redacted JSON debug line per request on stderr');
   });
 }

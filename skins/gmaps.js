@@ -75,6 +75,7 @@ function drawCar(ctx, x, y, angle, u) {
 export const gmapsSkin = {
   id: 'gmaps',
   label: 'Navigation',
+  weighted: true,
 
   mount({ container, autoAsk, resultEl }) {
     this.autoAsk = autoAsk;

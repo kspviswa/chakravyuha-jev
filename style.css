@@ -61,6 +61,19 @@ canvas{width:100%;height:auto;aspect-ratio:1/1;background:#0e1118;border:1px sol
 .skin-btn:hover{background:#232733}
 .skin-btn.active:hover{background:var(--accent2)}
 
+.modebar{display:flex;gap:8px}
+.mode-btn{flex:1;text-align:center;border:1px solid var(--line);background:#1b1e26;color:var(--dim);border-radius:10px;padding:10px 8px;font:11px var(--mono);cursor:pointer;min-height:40px}
+.mode-btn.active{background:var(--accent3);color:#180f2b;border-color:transparent}
+.mode-btn:hover{background:#232733}
+.mode-btn.active:hover{background:var(--accent3)}
+.mode-note{font-size:12px;color:var(--dim);background:#0e1015;border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+
+.run-outcome{font-size:13px;font-weight:600;border-radius:10px;padding:11px 13px;border:1px solid}
+.run-outcome.reached{color:var(--accent);border-color:#1d4a30;background:#04170e}
+.run-outcome.stuck{color:var(--warn);border-color:#5a4515;background:#1d1704}
+.run-outcome.exhausted{color:var(--warn);border-color:#5a4515;background:#1d1704}
+.run-outcome.error{color:var(--bad);border-color:#6b2230;background:#1d0b10}
+
 .controls{display:flex;flex-direction:column;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
 label{font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:6px}
 select{background:#0e1015;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font:inherit}
@@ -76,7 +89,7 @@ button:disabled{opacity:.5;cursor:progress}
 .cta{display:flex;gap:10px;flex-wrap:wrap}
 .cta button{flex:1}
 
-.meters{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.meters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .meter{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
 .m-label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
 .m-val{font:600 18px var(--mono)}
@@ -122,6 +135,7 @@ footer{color:#5c6478;font-size:12px;padding:0 22px 30px;max-width:1320px;margin:
   .ans{grid-template-columns:auto 1fr}
   .ans .conf{grid-column:2}
   .meter{padding:8px 10px}
+  .meters{grid-template-columns:1fr 1fr}
   .m-val{font-size:15px}
   pre{font-size:11px;max-height:220px}
   footer{padding:0 12px 24px}

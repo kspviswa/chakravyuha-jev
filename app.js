@@ -1,11 +1,16 @@
 // app.js — the shell: skin switch, transport switch, BYOK key UI, meters,
-// export, the referee panel, and the ONE round trip.
+// export, the referee panel, and the game loop. Two question modes:
+//   policy (default)  ask → apply → ask: per-step local snap judgments
+//   plan              the old global ask (move k of the whole path), kept
+//                     for comparison — live runs collapse and Jev's low
+//                     confidence shows it
 //
 // THE RULE (unchanged): there is no pathfinding in this file, nor in lib/ or
-// skins/. The board is serialised into a `state`, a fan-out of typed
-// questions is sent to Jev in ONE request, and the direction list Jev
-// returns is applied verbatim. lib/referee.js is used only to *check* the
-// answer afterwards.
+// skins/. The board is serialised into a `state`, typed questions are sent to
+// Jev, and the direction list Jev returns is applied verbatim. In policy
+// mode the loop enumerates the legal action space (one noul per candidate) and
+// applies the argmax over Jev's own probabilities — that is not a search, and
+// lib/referee.js is used only to *check* the answer afterwards.
 //
 // BYOK: the key is never logged, never put in a URL, never written to a
 // file, and never exported. It lives in localStorage only if the user ticks
@@ -14,7 +19,10 @@
 import {
   createTransport, deriveBase, loadSavedKey, rememberKey, forgetKey, memoryStorage,
 } from './lib/transport.js';
-import { askJev, answerMoves } from './lib/jev.js';
+import {
+  askJev, answerMoves, runPolicyGame, buildPolicyBody,
+  buildPolicyGridState, buildPolicyNavState,
+} from './lib/jev.js';
 import { gridSkin } from './skins/grid.js';
 import { gmapsSkin } from './skins/gmaps.js';
 
@@ -23,6 +31,8 @@ const storage = typeof localStorage !== 'undefined' ? localStorage : memoryStora
 const transport = createTransport({ base: BASE, storage });
 
 const SKINS = { grid: gridSkin, gmaps: gmapsSkin };
+
+const MODE_STORAGE = 'jev.gameMode';
 
 const num = (s) => Number(s.slice(5));
 const confPct = (c) => { const n = Number(c); return Number.isFinite(n) ? Math.round(n * 100) : 100; };
@@ -123,6 +133,29 @@ skinBar.addEventListener('click', (e) => {
   mountSkin(btn.dataset.skin);
 });
 
+// ------------------------------------------------------------- game-mode toggle
+const modeBar = $('mode-bar');
+
+function currentMode() {
+  try { return storage.getItem(MODE_STORAGE) === 'plan' ? 'plan' : 'policy'; } catch { return 'policy'; }
+}
+
+function refreshModeUI() {
+  const mode = currentMode();
+  modeBar.querySelectorAll('.mode-btn').forEach((b) =>
+    b.classList.toggle('active', b.dataset.gameMode === mode));
+  $('mode-note').textContent = mode === 'plan'
+    ? 'Plan mode is the OLD global question (“move k of the path”) — kept for comparison. In live runs its per-move answers collapse and Jev’s own low confidence shows it.'
+    : 'Policy mode is the new loop: at each step Jev only judges the legal next moves, and the loop applies its best guess.';
+}
+
+modeBar.addEventListener('click', (e) => {
+  const btn = e.target.closest('.mode-btn');
+  if (!btn || busy) return;
+  try { storage.setItem(MODE_STORAGE, btn.dataset.gameMode); } catch { /* ignore */ }
+  refreshModeUI();
+});
+
 // ------------------------------------------------------------------ errors
 function showErrorCard(code, message, hint) {
   $('error-code').textContent = code || 'error';
@@ -141,11 +174,6 @@ async function ask() {
   hideErrorCard();
   $('export-btn').disabled = true;
 
-  const { state, questions } = currentSkin.begin();
-  $('state-pre').textContent =
-    JSON.stringify({ state, questions: Object.fromEntries(Object.entries(questions).slice(0, 3)) }, null, 2) +
-    `\n… plus ${Object.keys(questions).length - 3} more questions in the same request.`;
-
   // BYOK bookkeeping: persist only when the user asked to remember.
   const key = currentKey();
   if (key) {
@@ -153,12 +181,25 @@ async function ask() {
     else forgetKey(storage);
   }
 
+  let ok = false;
+  try {
+    ok = currentMode() === 'plan' ? await askPlan(key) : await askPolicy(key);
+  } finally {
+    btn.disabled = false;
+    busy = false;
+  }
+  if (!ok) $('export-btn').disabled = true;
+}
+
+async function askPlan(key) {
+  const { state, questions } = currentSkin.begin();
+  $('state-pre').textContent =
+    JSON.stringify({ state, questions: Object.fromEntries(Object.entries(questions).slice(0, 3)) }, null, 2) +
+    `\n… plus ${Object.keys(questions).length - 3} more questions in the same request.`;
+
   const res = await askJev(transport, { state, questions, key });
 
-  btn.disabled = false;
-  busy = false;
   if (!res.ok) {
-    $('export-btn').disabled = true;
     const hint = res.error?.code === 'network'
       ? 'Check the server is running, or switch to the proxy transport.'
       : res.error?.code === 'forbidden'
@@ -166,41 +207,104 @@ async function ask() {
         : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
     showErrorCard(res.error?.code || 'error', res.error?.message || 'request failed', hint);
     if (res.body?.mode) setModeBadge(res.body.mode);
-    return;
+    return false;
   }
 
   const body = res.body;
   if (!body) {
     showErrorCard('bad_response', 'server returned an empty or non-JSON response');
-    return;
+    return false;
   }
 
   if (body.mode) setModeBadge(body.mode);
-  else setModeBadge(res.error ? null : lastMode);
-  if (body.mode === 'stub' || body.mode === 'replay') {
-    stubNote.textContent = body.mode === 'stub'
-      ? 'This answer is from the local STUB solver — paste a key for real Jev.'
-      : 'REPLAY — this answer is verbatim from a recorded fixture.';
-  } else if (body.mode === 'live') {
-    stubNote.textContent = 'LIVE — this answer is from real Jev via your key.';
-  }
+  else setModeBadge(lastMode);
+  noteMode(body.mode);
 
   lastRun = {
-    sent: { state, questions },
-    received: {
-      answers: body.answers,
-      _ms: body._ms,
-      _cost_usd: body._cost_usd,
-      _questions: body._questions,
-      mode: body.mode,
-    },
+    sent: { mode: 'plan', state, questions },
+    received: body,
   };
-  $('export-btn').disabled = false;
+  setRunOutcome(null);
   renderAnswers(body);
   const moves = answerMoves(body.answers);
-  renderReferee(currentSkin.check(moves), body);
-  renderMeters(body);
+  const v = currentSkin.check(moves);
+  renderReferee(v);
+  renderMeters(body, {
+    calls: 1, lastMs: body._ms, optimal: v.optimal,
+    steps: v.steps, cost: v.cost, weighted: !!currentSkin.weighted,
+  });
   currentSkin.render(body);
+  return true;
+}
+
+async function askPolicy(key) {
+  // Reset the skin's visuals; the per-step loop owns the state from here on.
+  currentSkin.begin();
+  const board = currentSkin.board;
+  $('state-pre').textContent = JSON.stringify({
+    mode: 'policy',
+    weighted: !!currentSkin.weighted,
+    loop: 'ask → apply → ask',
+    cap: `maxSteps = 4 × (R + C) = ${4 * (board.R + board.C)}`,
+    sampleState: runPolicyPreview(board, currentSkin.weighted),
+  }, null, 2);
+
+  const game = await runPolicyGame({
+    board, transport, model: 'jev-latest', key,
+    weighted: !!currentSkin.weighted,
+  });
+
+  if (game.outcome === 'error') {
+    const e = game.error || {};
+    const hint = e.code === 'network'
+      ? 'Check the server is running, or switch to the proxy transport.'
+      : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
+    showErrorCard(e.code || 'error', e.message || 'request failed', hint);
+    return false;
+  }
+
+  const body = buildPolicyBody(game);
+  body.mode = game.calls[0]?.res?.mode || 'stub';
+  setModeBadge(body.mode);
+  noteMode(body.mode);
+
+  lastRun = {
+    sent: { mode: 'policy', skin: currentSkin.id, weighted: !!currentSkin.weighted, game },
+    received: body,
+  };
+  renderAnswers(body);
+  const moves = answerMoves(body.answers);
+  const v = currentSkin.check(moves);
+  renderReferee(v);
+  renderMeters(body, {
+    calls: game.calls.length, lastMs: body._last_ms,
+    optimal: v.optimal, steps: v.steps, cost: v.cost,
+    weighted: !!currentSkin.weighted,
+    qPerCall: game.lastQuestions,
+  });
+  currentSkin.render(body);
+  setRunOutcome(game, v);
+  return true;
+}
+
+/** A tiny taste of the first per-step state, for the "what we sent" panel. */
+function runPolicyPreview(board, weighted) {
+  const r = board.src.r, c = board.src.c;
+  const maxSteps = 4 * (board.R + board.C);
+  const state = weighted
+    ? buildPolicyNavState(board, { r, c, visited: [{ row: r, col: c }], step: 1, maxSteps })
+    : buildPolicyGridState(board, { r, c, visited: [{ row: r, col: c }], step: 1, maxSteps });
+  return state;
+}
+
+function noteMode(mode) {
+  if (mode === 'stub' || mode === 'replay') {
+    stubNote.textContent = mode === 'stub'
+      ? 'This answer is from the local STUB solver — paste a key for real Jev.'
+      : 'REPLAY — this answer is verbatim from a recorded fixture.';
+  } else if (mode === 'live') {
+    stubNote.textContent = 'LIVE — this answer is from real Jev via your key.';
+  }
 }
 
 function renderAnswers(res) {
@@ -251,12 +355,55 @@ function renderReferee(v) {
       : (v.weighted ? 'Jev did not pick the least-cost route.' : 'Jev did not solve it optimally.')}</div>`;
 }
 
-function renderMeters(res) {
-  $('m-ms').textContent = `${res._ms ?? '?'} ms`;
-  $('m-cost').textContent = res._cost_usd !== undefined ? `$${res._cost_usd.toFixed(6)}` : '—';
-  $('m-q').textContent = String(res._questions ?? '—');
-  $('m-rt').textContent = '1';
-  if (res.mode) $('m-rt').textContent = '1'; // the fan-out is always one round trip
+function renderMeters(body, extra = {}) {
+  const lastMs = extra.lastMs ?? body._last_ms ?? body._ms;
+  const totalMs = extra.totalMs ?? body._total_ms ?? body._ms;
+  const calls = extra.calls ?? body._calls ?? 1;
+  const optimal = extra.optimal;
+  const steps = extra.steps;
+  const cost = extra.cost;
+  const weighted = !!extra.weighted;
+  $('m-decision').textContent = `${lastMs ?? '?'} ms`;
+  $('m-total').textContent = `${totalMs ?? '?'} ms`;
+  $('m-calls').textContent = String(calls);
+  $('m-cost').textContent = body._cost_usd !== undefined ? `$${body._cost_usd.toFixed(6)}` : '—';
+  $('m-q').textContent = String(extra.qPerCall ?? body._questions ?? '—');
+  // On the weighted (navigation) skin the optimum is a congestion COST, not a
+  // step count — comparing steps against it would be nonsense like "26 / 53".
+  const label = document.querySelector('#m-steps')?.closest('.meter')?.querySelector('.m-label');
+  if (label) label.textContent = weighted ? 'cost vs optimal' : 'steps vs optimal';
+  const actual = weighted ? cost : steps;
+  $('m-steps').textContent = optimal === null
+    ? 'unreachable'
+    : actual !== undefined
+      ? `${actual} / ${optimal}`
+      : (body._steps ?? '—');
+}
+
+/** Honest outcome banner: reached / stuck / exhausted / error. */
+function setRunOutcome(game, v) {
+  const el = $('run-outcome');
+  if (!el) return;
+  if (!game) { el.hidden = true; return; }
+  el.hidden = false;
+  el.classList.remove('reached', 'stuck', 'exhausted', 'error');
+  const prefix = `${game.calls?.length ?? 1} calls`;
+  if (game.outcome === 'reached') {
+    el.classList.add('reached');
+    const optimalNote = (v && v.optimal !== null)
+      ? `, optimal ${v.optimal}`
+      : (v && v.optimal === null ? ' (no route exists)' : '');
+    el.textContent = `${prefix} · reached the goal${optimalNote} · ${game.moves.length} steps${game.reversals ? ` · ${game.reversals} reversal${game.reversals > 1 ? 's' : ''}` : ''}`;
+  } else if (game.outcome === 'stuck') {
+    el.classList.add('stuck');
+    el.textContent = `${prefix} · STUCK — every legal neighbour was already visited. No backtracking search: the run stops here.`;
+  } else if (game.outcome === 'exhausted') {
+    el.classList.add('exhausted');
+    el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the goal.`;
+  } else {
+    el.classList.add('error');
+    el.textContent = `${prefix} · error — the run could not finish.`;
+  }
 }
 
 // ----------------------------------------------------------------- export
@@ -290,4 +437,5 @@ fetch(`${BASE}api/health`).then((r) => r.json()).then((h) => {
 
 refreshKeyUI();
 refreshTransportUI();
+refreshModeUI();
 mountSkin(savedSkin === 'gmaps' ? 'gmaps' : 'grid');

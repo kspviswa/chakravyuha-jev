@@ -48,12 +48,20 @@
       <button class="skin-btn" data-skin="gmaps" type="button">🚗 Navigation</button>
     </div>
 
+    <div class="modebar" id="mode-bar">
+      <button class="mode-btn" data-game-mode="policy" type="button">mode: policy · ask → apply → ask</button>
+      <button class="mode-btn" data-game-mode="plan" type="button">mode: plan · global ask</button>
+    </div>
+    <div class="mode-note" id="mode-note"></div>
+
     <div class="controls" id="skin-controls"></div>
 
     <div class="cta">
       <button id="ask" class="primary" type="button">▶ Ask Jev for the path</button>
       <button id="export-btn" class="ghost" type="button" disabled>⇩ Export run</button>
     </div>
+
+    <div id="run-outcome" class="run-outcome" hidden></div>
 
     <div id="error-card" class="error-card" hidden>
       <span class="ec-code" id="error-code"></span>
@@ -62,10 +70,12 @@
     </div>
 
     <div class="meters">
-      <div class="meter"><span class="m-label">decision time</span><span class="m-val" id="m-ms">—</span></div>
-      <div class="meter"><span class="m-label">cost</span><span class="m-val" id="m-cost">—</span></div>
-      <div class="meter"><span class="m-label">questions in one call</span><span class="m-val" id="m-q">—</span></div>
-      <div class="meter"><span class="m-label">round trips</span><span class="m-val" id="m-rt">—</span></div>
+      <div class="meter"><span class="m-label">decision time · last step</span><span class="m-val" id="m-decision">—</span></div>
+      <div class="meter"><span class="m-label">total time</span><span class="m-val" id="m-total">—</span></div>
+      <div class="meter"><span class="m-label">calls made</span><span class="m-val" id="m-calls">—</span></div>
+      <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
+      <div class="meter"><span class="m-label">questions per call</span><span class="m-val" id="m-q">—</span></div>
+      <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
     </div>
 
     <div id="skin-result" class="block skin-result" hidden></div>
