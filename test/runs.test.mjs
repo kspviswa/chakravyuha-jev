@@ -12,6 +12,9 @@ import path from 'node:path';
 import { startServer, stopServer, postJev, FIXED_PAYLOAD } from './helpers.mjs';
 import { RUNS_CAP, normaliseRunRecord, createServer } from '../server.mjs';
 
+const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const ROOT = path.join(__dirname, '..');
+
 const scratchFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-runs-')), 'runs.jsonl');
 
 const VALID_RUN = {
@@ -310,7 +313,12 @@ test('createServer({}) still serves /api/runs (regression: a partial config left
   // — createServer({}) or a helper overriding one field — produced a config
   // with no runsFile, and every /api/runs request 500'd. The browser suite and
   // the history page hit exactly this.
-  const server = createServer({});
+  //
+  // The scratch file is passed EXPLICITLY: a truly empty {} would fall back to
+  // DEFAULTS.runsFile (the repo's real runs.jsonl), which the live server also
+  // writes to — that made this test order-dependent and flaky. The "no runsFile
+  // -> DEFAULTS fills it in" half is asserted statically below instead.
+  const server = createServer({ runsFile: scratchFile() });
   await new Promise((res, rej) => { server.once('error', rej); server.listen(0, '127.0.0.1', res); });
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -333,4 +341,12 @@ test('createServer({}) still serves /api/runs (regression: a partial config left
   } finally {
     await new Promise((r) => server.close(r));
   }
+});
+
+test('DEFAULTS supplies a runsFile (so createServer({}) cannot leave it undefined)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
+  assert.match(src, /runsFile:\s*path\.join\(__dirname,\s*'runs\.jsonl'\)/,
+    'DEFAULTS defines runsFile');
+  assert.match(src, /const cfg = \{ \.\.\.DEFAULTS, \.\.\.config \}/,
+    'createServer merges DEFAULTS into a partial config');
 });
