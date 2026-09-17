@@ -38,8 +38,15 @@
       </label>
       <button id="randomize" class="ghost">🎲 Randomize obstacles</button>
       <button id="ask" class="primary">▶ Ask Jev for the path</button>
+      <button id="export-btn" class="ghost" disabled>⇩ Export run</button>
       <label class="check"><input type="checkbox" id="heatmap" /> also ask per-cell “is this cell on the path?”</label>
       <label class="check"><input type="checkbox" id="animate" checked /> animate the path</label>
+    </div>
+
+    <div id="error-card" class="error-card" hidden>
+      <span class="ec-code" id="error-code"></span>
+      <span class="ec-msg" id="error-msg"></span>
+      <span class="ec-hint">Hint: set <code>TYPESAFE_API_KEY</code> on the server to call real Jev.</span>
     </div>
 
     <div class="meters">

@@ -1,0 +1,27 @@
+{
+  "_note": "Committed REPLAY fixtures. Each entry maps a demo name to its recorded stub response; ",
+  "easy": {
+    "hash": "62e6d4b23ee125b69e9b867b1bb4324639da4f376e7edbc481ff4e67c725668d",
+    "label": "Easy · 8×8",
+    "shape": [
+      8,
+      8
+    ],
+    "kind": "stub",
+    "file": "fixtures/62e6d4b23ee125b69e9b867b1bb4324639da4f376e7edbc481ff4e67c725668d.json",
+    "minimumMoves": 14,
+    "questions": 67
+  },
+  "hard": {
+    "hash": "9c8b3f9089ccb7e6b0d7bacc0ca85e78e74c7fc5b7891f4b10fa61f99d8ef97a",
+    "label": "Hard · 16×16",
+    "shape": [
+      16,
+      16
+    ],
+    "kind": "stub",
+    "file": "fixtures/9c8b3f9089ccb7e6b0d7bacc0ca85e78e74c7fc5b7891f4b10fa61f99d8ef97a.json",
+    "minimumMoves": 30,
+    "questions": 67
+  }
+}

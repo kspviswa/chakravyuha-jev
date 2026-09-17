@@ -43,6 +43,16 @@ export function shortestPathLength(board) {
 }
 
 /**
+ * Board-generation sanity only: is the board solvable and how far apart are
+ * S and D on the shortest path? Used by app.js to reject dull random boards.
+ * Verification-only, like everything else in this module.
+ */
+export function boardQuality(board) {
+  const minimumMoves = shortestPathLength(board);
+  return { solvable: minimumMoves !== null, minimumMoves };
+}
+
+/**
  * Walk the direction list Jev returned, starting at S. Returns the cells
  * visited plus a verdict. This is a *check*, not a search.
  */

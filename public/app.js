@@ -5,7 +5,7 @@
 // to Jev in ONE request, and the direction list Jev returns is applied
 // verbatim. referee.js is used only to *check* the answer afterwards.
 
-import { verdict, shortestPathLength } from './referee.js';
+import { verdict, boardQuality } from './referee.js';
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -44,8 +44,8 @@ function makeBoard(diffKey) {
     rows[dst.r][dst.c] = 'D';
 
     const b = { R, C, rows, src, dst, difficulty: diffKey };
-    const len = shortestPathLength(b);           // generation sanity only
-    if (len !== null && len >= Math.max(4, Math.round((R + C) * 0.5))) return b;
+    const q = boardQuality(b);           // generation sanity only
+    if (q.solvable && q.minimumMoves >= Math.max(4, Math.round((R + C) * 0.5))) return b;
   }
   // fall back to whatever we last produced
   return { R, C, rows: board?.rows, src: { r: 0, c: 0 }, dst: { r: R - 1, c: C - 1 }, difficulty: diffKey };
@@ -174,6 +174,34 @@ function buildState(b) {
 }
 
 // ---------------------------------------------------------------- the call
+let lastRun = null;
+let lastMode = null;
+
+function showErrorCard(code, message) {
+  const card = document.getElementById('error-card');
+  document.getElementById('error-code').textContent = code || 'error';
+  document.getElementById('error-msg').textContent = message;
+  card.hidden = false;
+}
+
+function hideErrorCard() {
+  document.getElementById('error-card').hidden = true;
+}
+
+const MODE_BADGES = {
+  live:   { label: 'LIVE',    cls: 'live' },
+  replay: { label: 'REPLAY',  cls: 'replay' },
+  stub:   { label: 'STUB — no API key; answer from a local solver', cls: 'stub' },
+};
+
+function setModeBadge(mode) {
+  const el = document.getElementById('mode');
+  const b = MODE_BADGES[mode] || { label: String(mode || 'unknown').toUpperCase(), cls: '' };
+  lastMode = mode || null;
+  el.textContent = b.label;
+  el.className = 'mode ' + b.cls;
+}
+
 async function askJev() {
   if (animating) return;
   const btn = document.getElementById('ask');
@@ -196,15 +224,29 @@ async function askJev() {
       body: JSON.stringify({ state, questions }),
     });
     res = await r.json();
-    if (!r.ok) err = res.error || `HTTP ${r.status}`;
-  } catch (e) { err = e.message; }
+    if (!r.ok) err = res.error || { code: `http_${r.status}`, message: `request failed (HTTP ${r.status})` };
+  } catch (e) { err = { code: 'network', message: e.message }; }
 
   btn.disabled = false;
   if (err) {
-    document.getElementById('answers').innerHTML = `<div class="ans"><span class="val" style="color:var(--bad)">error: ${escapeHtml(String(err))}</span></div>`;
+    document.getElementById('export-btn').disabled = true;
+    showErrorCard(err.code, err.message);
     return;
   }
 
+  hideErrorCard();
+  if (res.mode) setModeBadge(res.mode);
+  lastRun = {
+    sent: { state, questions },
+    received: {
+      answers: res.answers,
+      _ms: res._ms,
+      _cost_usd: res._cost_usd,
+      _questions: res._questions,
+      mode: res.mode,
+    },
+  };
+  document.getElementById('export-btn').disabled = false;
   renderAnswers(res);
   applyPath(res);
   renderReferee(res);
@@ -302,18 +344,35 @@ function reset() {
   document.getElementById('referee').classList.add('empty');
   document.getElementById('referee').textContent = '—';
   ['m-ms', 'm-cost', 'm-q', 'm-rt'].forEach((id) => (document.getElementById(id).textContent = '—'));
+  hideErrorCard();
+  document.getElementById('export-btn').disabled = true;
+  lastRun = null;
   draw();
+}
+
+function exportRun() {
+  if (!lastRun) return;
+  const blob = new Blob([JSON.stringify(lastRun, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  a.href = URL.createObjectURL(blob);
+  a.download = `pathpuzzle-run-${lastMode || 'x'}-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 document.getElementById('randomize').addEventListener('click', reset);
 document.getElementById('difficulty').addEventListener('change', reset);
 document.getElementById('ask').addEventListener('click', askJev);
 document.getElementById('heatmap').addEventListener('change', () => draw());
+document.getElementById('export-btn').addEventListener('click', exportRun);
 
 fetch('/api/health').then((r) => r.json()).then((h) => {
+  setModeBadge(h.mode || (h.stub ? 'stub' : 'live'));
+}).catch(() => {
   const el = document.getElementById('mode');
-  el.textContent = h.stub ? 'STUB — no API key, answers are local BFS' : `LIVE — ${h.model}`;
-  el.classList.add(h.stub ? 'stub' : 'live');
-}).catch(() => { document.getElementById('mode').textContent = 'offline'; });
+  el.textContent = 'OFFLINE';
+  el.className = 'mode';
+});
 
 reset();
