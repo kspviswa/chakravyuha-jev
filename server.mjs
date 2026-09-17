@@ -920,7 +920,13 @@ function handleStatic(req, res, url) {
 
 // ---- app & entry point ---------------------------------------------------
 export function createServer(config = readConfig()) {
-  const rateLimited = makeRateLimiter(config.rateLimit);
+  // Callers may pass a PARTIAL config (e.g. createServer({}) or a test helper
+  // that only overrides a field or two). Fill the gaps from DEFAULTS rather
+  // than from readConfig(), so a stray TYPESAFE_* env var can never leak a real
+  // key or upstream into a test. Without this, createServer({}) produced a
+  // config with no runsFile and every /api/runs request 500'd.
+  const cfg = { ...DEFAULTS, ...config };
+  const rateLimited = makeRateLimiter(cfg.rateLimit);
   return http.createServer((req, res) => {
     let url;
     try {
@@ -930,18 +936,18 @@ export function createServer(config = readConfig()) {
     }
 
     if (url.pathname === '/api/jev' && req.method === 'POST') {
-      return handleApiJev(req, res, config, rateLimited).catch(() =>
+      return handleApiJev(req, res, cfg, rateLimited).catch(() =>
         err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
     }
     if (url.pathname === '/api/runs') {
-      return handleApiRuns(req, res, config, rateLimited).catch(() =>
+      return handleApiRuns(req, res, cfg, rateLimited).catch(() =>
         err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
     }
     if (url.pathname === '/api/health') {
       return send(res, 200, {
         ok: true,
         mode: 'proxy',
-        hasEnvKey: !!config.apiKey,
+        hasEnvKey: !!cfg.apiKey,
       });
     }
     if (url.pathname.startsWith('/api/')) {

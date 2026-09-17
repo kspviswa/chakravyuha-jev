@@ -443,6 +443,11 @@ function buildRunRecord({ game, v, body, mode, outcome }) {
   const board = currentSkin.board;
   const skin = currentSkin.id;
   if (!board || !body) return null;
+  // The plan-mode callers pass `mode` explicitly; the policy callers do not, so
+  // fall back to the mode the toggle is actually showing. Without this every
+  // policy run was rejected by the server ("field 'mode' must be a string") and
+  // silently never recorded.
+  const runMode = mode || currentMode();
   const weighted = skin === 'gmaps';
   const reached = v ? !!v.reached : (game ? !!game.reached : false);
   const checks = v ? v.checks : [];
@@ -464,7 +469,7 @@ function buildRunRecord({ game, v, body, mode, outcome }) {
 
   return {
     skin,
-    mode,
+    mode: runMode,
     source: body.mode === 'replay' ? 'replay' : body.mode === 'live' ? 'live' : (lastMode === 'replay' ? 'replay' : lastMode === 'live' ? 'live' : 'stub'),
     model: body.model || null,
     board: {

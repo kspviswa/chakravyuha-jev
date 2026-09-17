@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer, stopServer, postJev, FIXED_PAYLOAD } from './helpers.mjs';
-import { RUNS_CAP, normaliseRunRecord } from '../server.mjs';
+import { RUNS_CAP, normaliseRunRecord, createServer } from '../server.mjs';
 
 const scratchFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-runs-')), 'runs.jsonl');
 
@@ -303,5 +303,34 @@ test('recording runs does NOT alter the play flow response', async () => {
     assert.deepEqual(stable(after.body), stable(before.body), 'the jev response is unchanged');
   } finally {
     await stopServer(ctx);
+  }
+});
+test('createServer({}) still serves /api/runs (regression: a partial config left runsFile undefined)', async () => {
+  // createServer used to use the caller's object verbatim, so a partial config
+  // — createServer({}) or a helper overriding one field — produced a config
+  // with no runsFile, and every /api/runs request 500'd. The browser suite and
+  // the history page hit exactly this.
+  const server = createServer({});
+  await new Promise((res, rej) => { server.once('error', rej); server.listen(0, '127.0.0.1', res); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const h = await fetch(`${base}/api/health`);
+    assert.equal(h.status, 200, 'health still works');
+
+    const g = await fetch(`${base}/api/runs`);
+    assert.equal(g.status, 200, 'GET /api/runs must not 500 on a partial config');
+    assert.deepEqual(await g.json(), { runs: [], count: 0 });
+
+    const p = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        skin: 'grid', mode: 'policy', source: 'stub', outcome: 'reached',
+        reached: true, steps: 22, totalMs: 20,
+      }),
+    });
+    assert.equal(p.status, 201, 'POST /api/runs must not 500 on a partial config');
+  } finally {
+    await new Promise((r) => server.close(r));
   }
 });

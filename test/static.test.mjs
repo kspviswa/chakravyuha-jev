@@ -249,3 +249,29 @@ test('docs: the README documents the stub, the CORS finding, and the shim', () =
   assert.match(readme, /CORS|Access-Control-Allow-Origin/i);
   assert.match(readme, /proxy|shim/i);
 });
+test('client: every run record carries a mode (regression — policy runs were silently rejected)', () => {
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+
+  // buildRunRecord must default the mode to the UI's current mode, because the
+  // policy-mode call sites pass { game, v, body } and no mode. Without the
+  // fallback the server rejected every policy run with "field 'mode' must be a
+  // string" and, because recording is fire-and-forget, nothing was recorded and
+  // nothing complained.
+  assert.match(app, /const runMode = mode \|\| currentMode\(\)/,
+    'buildRunRecord defaults mode to currentMode()');
+  assert.match(app, /^\s*mode: runMode,/m,
+    'the record uses the defaulted mode, not the raw argument');
+  assert.ok(!/^\s*mode,\s*$/m.test(app.split('function buildRunRecord')[1].split('function recordRun')[0]),
+    'the record must not emit the raw (possibly undefined) mode');
+
+  // the policy call sites really do omit mode — if that changes, revisit the guard
+  const policyCalls = [...app.matchAll(/recordRun\(\{\s*game,[^}]*\}\)/g)];
+  assert.ok(policyCalls.length >= 1, 'policy-mode recordRun call sites exist');
+  for (const c of policyCalls) {
+    assert.ok(!/mode:/.test(c[0]), 'policy call sites omit mode (hence the fallback)');
+  }
+
+  // and the server must still require it, or the guard above proves nothing
+  const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
+  assert.match(server, /needEnum\(src, 'mode', RUN_MODES\)/, "the server requires 'mode'");
+});

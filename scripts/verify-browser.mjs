@@ -78,8 +78,15 @@ async function evalCond(cdp, expression, timeout = 30000) {
   for (;;) {
     const out = await cdp.send('Runtime.evaluate', { expression, returnByValue: true });
     const v = out.result?.value;
-    if (typeof v === 'object' && v !== null && ('err' in v)) return v;
-    if (v) return v;
+    if (typeof v === 'object' && v !== null && ('err' in v)) {
+      // A real error is terminal; otherwise keep polling until `done`. Returning
+      // on `err` alone made every {done, err} probe stop on the FIRST poll, so
+      // the history check read the page before it had rendered (0 cards/rows).
+      if (v.err) return v;
+      if (v.done) return v;
+    } else if (v) {
+      return v;
+    }
     if (Date.now() - start > timeout) throw new Error(`condition timed out: ${expression}`);
     await new Promise((r) => setTimeout(r, 250));
   }
