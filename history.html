@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PathPuzzle — run history &amp; statistics</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>PathPuzzle</h1>
+    <span class="tag">run history &amp; statistics</span>
+  </div>
+  <div class="top-right">
+    <a class="navlink" href="./index.html">← Play</a>
+  </div>
+</header>
+
+<main class="hist">
+  <div class="hist-toolbar">
+    <div class="filters">
+      <label>source
+        <select id="f-source"><option value="all">all</option></select>
+      </label>
+      <label>mode
+        <select id="f-mode"><option value="all">all</option></select>
+      </label>
+      <label>skin
+        <select id="f-skin"><option value="all">all</option></select>
+      </label>
+    </div>
+    <div class="hist-actions">
+      <button id="export-csv" class="ghost" type="button">⇩ Export CSV</button>
+      <button id="clear-history" class="ghost danger" type="button">Clear history</button>
+    </div>
+  </div>
+
+  <div id="notice" class="hist-notice" hidden></div>
+
+  <details class="block metric-defs">
+    <summary>What do these numbers mean?</summary>
+    <ul>
+      <li><b>Speed</b> — <code>totalMs</code> is the whole-run wall time; <code>msPerStep = totalMs ÷ max(steps, 1)</code>. Lower is better.</li>
+      <li><b>Optimality</b> — <code>optimalSteps / steps</code> on the grid skin, <code>optimalCost / cost</code> on the navigation skin, clamped to [0, 1]. <b>1.0 is perfect.</b> A run that did not reach the goal scores 0; a board with no route at all scores <code>null</code> and is excluded from the mean rather than counted as 0.</li>
+      <li><b>Accuracy</b> — <code>checksPassed / checksTotal</code> from the referee's verification checks. <code>reached</code> is tracked separately, because “valid but never arrived” and “arrived” are different failures.</li>
+      <li><b>Variance / stddev</b> — sample variance (n&nbsp;−&nbsp;1 denominator). Variance needs at least two runs; below that it shows <b>—</b>, never a false 0.</li>
+      <li>Groups are <code>source · mode · skin</code>. Different kinds of run are never averaged together — stub runs are near-perfect by construction.</li>
+    </ul>
+  </details>
+
+  <section id="stats" class="stat-grid" aria-label="per-group statistics"></section>
+
+  <section class="block runs-block">
+    <h2>Runs <em id="run-count"></em></h2>
+    <div class="table-scroll">
+      <table class="runs-table" id="runs-table">
+        <thead>
+          <tr>
+            <th data-col="at">time</th>
+            <th data-col="skin">skin</th>
+            <th data-col="mode">mode</th>
+            <th data-col="source">source</th>
+            <th data-col="outcome">outcome</th>
+            <th data-col="steps">steps/optimal</th>
+            <th data-col="cost">cost/optimal</th>
+            <th data-col="accuracy">accuracy</th>
+            <th data-col="totalMs">speed</th>
+            <th data-col="board">board</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>Every completed run is recorded server-side (runs.jsonl, capped at 500) and shown here grouped by source · mode · skin. The API key never appears in a run record. <a class="navlink" href="./index.html">Back to the puzzle →</a></span>
+</footer>
+
+<script type="module" src="./history.js"></script>
+</body>
+</html>

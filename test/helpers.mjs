@@ -16,11 +16,16 @@ export function startServer(overrides = {}) {
   const scratch = useRealFixtures
     ? undefined
     : rest.recordedDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jev-fixtures-'));
-  const server = createServer({ rateLimit: 100_000, recordedDir: scratch, ...rest });
+  // Each server also gets its OWN runs file: the run-history suite (and any
+  // accidental /api/runs traffic from other tests) must never touch the real
+  // repo-root runs.jsonl — the recorded-fixtures race, redux.
+  const runsFile = rest.runsFile
+    ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jev-runs-')) + '/runs.jsonl';
+  const server = createServer({ rateLimit: 100_000, recordedDir: scratch, runsFile, ...rest });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, base: `http://127.0.0.1:${server.address().port}`, recordedDir: scratch });
+      resolve({ server, base: `http://127.0.0.1:${server.address().port}`, recordedDir: scratch, runsFile });
     });
   });
 }

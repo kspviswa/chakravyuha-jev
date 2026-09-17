@@ -38,7 +38,7 @@ const PING = 0; // stub recordings pretend the round trip was instant
 
 // Only the client tree is served. server.mjs, package.json, test/, fixtures/,
 // .git/ … are deliberately NOT static assets.
-const STATIC_FILES = new Set(['index.html', 'app.js', 'style.css']);
+const STATIC_FILES = new Set(['index.html', 'app.js', 'history.html', 'history.js', 'style.css']);
 const STATIC_DIRS = new Set(['lib', 'skins']);
 
 const MIME = {
@@ -77,6 +77,10 @@ const DEFAULTS = {
   maxBodyBytes: 2_000_000,
   maxQuestions: 512,
   recordedDir: RECORDED_DIR,
+  // Server-side run history (append-only JSONL). Overridable for tests so they
+  // never touch the real runs.jsonl — the same isolation lesson as the
+  // recorded-fixtures race.
+  runsFile: path.join(__dirname, 'runs.jsonl'),
 };
 
 export function readConfig(env = process.env) {
@@ -96,6 +100,8 @@ export function readConfig(env = process.env) {
     debug: env.JEV_DEBUG || '',
     // test-only override so the suite can point at a mock upstream
     upstream: env.TYPESAFE_UPSTREAM || UPSTREAM,
+    // test-only override so the run-history suite writes to a scratch file
+    runsFile: env.RUNS_FILE || DEFAULTS.runsFile,
   };
 }
 
@@ -499,6 +505,258 @@ async function recordLive(hash, payload, out, config) {
   }
 }
 
+// ---- run history storage (/api/runs) --------------------------------------
+// Server-side, append-only JSONL (one run object per line), so the history
+// survives a browser change and is visible from any device. Cap keeps the
+// most recent 500 runs; past that the file is rewritten atomically
+// (runs.jsonl.tmp → rename) dropping the oldest. A corrupt line is skipped.
+// Validation is strictly whitelist-based: unknown keys are dropped, secret-ish
+// field names are dropped (and noted), numbers are Number.isFinite-checked and
+// clamped, strings are length-capped.
+
+export const RUNS_CAP = 500;
+export const RUN_RECORD_MAX_BYTES = 8 * 1024;
+
+const RUN_SKINS = ['grid', 'gmaps'];
+const RUN_MODES = ['policy', 'plan'];
+const RUN_SOURCES = ['live', 'stub', 'replay'];
+const RUN_OUTCOMES = ['reached', 'stuck', 'exhausted', 'wall', 'error'];
+const SECRET_FIELD = /key|token|secret|auth/i;
+
+class BadRun extends Error {}
+
+/** strip any credential-shaped field names before anything else touches them */
+function dropSecrets(obj, note) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (SECRET_FIELD.test(k)) { note.push(k); continue; }
+    out[k] = v;
+  }
+  return out;
+}
+
+function needStr(src, key, maxLen = 200) {
+  const v = src[key];
+  if (typeof v !== 'string') throw new BadRun(`field '${key}' must be a string`);
+  if (v.length > maxLen) throw new BadRun(`field '${key}' exceeds ${maxLen} chars`);
+  return v;
+}
+
+function optionalStr(src, key, maxLen = 200) {
+  const v = src[key];
+  if (v === undefined || v === null) return null;
+  return needStr(src, key, maxLen);
+}
+
+function needEnum(src, key, allowed) {
+  const v = needStr(src, key, 200);
+  if (!allowed.includes(v)) throw new BadRun(`field '${key}' must be one of ${allowed.join(', ')}`);
+  return v;
+}
+
+function needNum(src, key, min, max) {
+  const v = src[key];
+  if (!(typeof v === 'number' && Number.isFinite(v))) throw new BadRun(`field '${key}' must be a finite number`);
+  return Math.min(max, Math.max(min, v));
+}
+
+function optionalNum(src, key, min, max) {
+  const v = src[key];
+  if (v === undefined || v === null) return null;
+  return needNum(src, key, min, max);
+}
+
+function needBool(src, key) {
+  const v = src[key];
+  if (typeof v !== 'boolean') throw new BadRun(`field '${key}' must be a boolean`);
+  return v;
+}
+
+function intish(v, min, max) {
+  return Number.isFinite(v) ? Math.round(Math.min(max, Math.max(min, v))) : null;
+}
+
+function normaliseBoard(v, note) {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) throw new BadRun('board must be an object');
+  const b = dropSecrets(v, note);
+  const out = {};
+  if (b.rows !== undefined && b.rows !== null) {
+    const rows = intish(b.rows, 1, 1000);
+    if (rows === null) throw new BadRun('board.rows must be a finite number');
+    out.rows = rows;
+  }
+  if (b.cols !== undefined && b.cols !== null) {
+    const cols = intish(b.cols, 1, 1000);
+    if (cols === null) throw new BadRun('board.cols must be a finite number');
+    out.cols = cols;
+  }
+  if (b.difficulty !== undefined) out.difficulty = optionalStr(b, 'difficulty', 200);
+  if (b.hash !== undefined) out.hash = optionalStr(b, 'hash', 200);
+  return out;
+}
+
+/**
+ * Whitelist + coerce a client run record. Never trusts a single field:
+ * unknown keys and secret-ish fields are dropped, numbers are finite-and-
+ * clamped, strings are length-capped. The server stamps `id`/`at` later.
+ * Returns { ok, record, dropped } or { ok: false, error: { status, code, message } }.
+ */
+export function normaliseRunRecord(input) {
+  const note = [];
+  const src = dropSecrets(input, note);
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    return { ok: false, error: { status: 400, code: ERROR_CODES.BAD_REQUEST, message: 'run record must be a single JSON object' } };
+  }
+  try {
+    const rec = {
+      skin: needEnum(src, 'skin', RUN_SKINS),
+      mode: needEnum(src, 'mode', RUN_MODES),
+      source: needEnum(src, 'source', RUN_SOURCES),
+      outcome: needEnum(src, 'outcome', RUN_OUTCOMES),
+      reached: needBool(src, 'reached'),
+      steps: needNum(src, 'steps', 0, 1e6),
+      totalMs: needNum(src, 'totalMs', 0, 1e9),
+    };
+    for (const [key, min, max] of [
+      ['optimalSteps', 0, 1e6], ['cost', 0, 1e7], ['optimalCost', 0, 1e7],
+      ['checksPassed', 0, 1e6], ['checksTotal', 0, 1e6],
+      ['lastStepMs', 0, 1e9], ['calls', 0, 1e6], ['questions', 0, 1e6],
+      ['costUsd', 0, 1e6],
+    ]) {
+      if (key in src) rec[key] = optionalNum(src, key, min, max);
+    }
+    for (const key of ['optimalityScore', 'accuracyScore']) {
+      if (key in src) rec[key] = optionalNum(src, key, 0, 1);
+    }
+    if ('model' in src) rec.model = optionalStr(src, 'model', 200);
+    if ('board' in src) rec.board = normaliseBoard(src.board, note);
+    return { ok: true, record: rec, dropped: note };
+  } catch (e) {
+    if (e instanceof BadRun) {
+      return { ok: false, error: { status: 400, code: ERROR_CODES.BAD_REQUEST, message: e.message } };
+    }
+    throw e;
+  }
+}
+
+/** Read all stored runs (append order), skipping unparseable lines. */
+export async function readRuns(file) {
+  let raw;
+  try {
+    raw = await fs.promises.readFile(file, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    throw e;
+  }
+  const runs = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { runs.push(JSON.parse(line)); } catch { /* corrupt line — never break the read */ }
+  }
+  return runs;
+}
+
+// Serialise per-file so a burst of concurrent POSTs can't interleave the
+// append + cap-trim into a corrupt file.
+const fileLocks = new Map();
+function withFileLock(file, fn) {
+  const prev = fileLocks.get(file) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  fileLocks.set(file, next.catch(() => {}));
+  return next;
+}
+
+/** Append one run; past RUNS_CAP rewrite atomically keeping the newest 500. */
+export async function appendRun(file, record) {
+  return withFileLock(file, async () => {
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.appendFile(file, JSON.stringify(record) + '\n', 'utf8');
+    try {
+      const raw = await fs.promises.readFile(file, 'utf8');
+      const lines = raw.split('\n').filter((l) => l.trim());
+      if (lines.length > RUNS_CAP) {
+        const keep = lines.slice(lines.length - RUNS_CAP);
+        const tmp = `${file}.tmp`;
+        await fs.promises.writeFile(tmp, keep.join('\n') + '\n', 'utf8');
+        await fs.promises.rename(tmp, file);
+      }
+    } catch (e) {
+      // The append already succeeded; a failed cap-trim must not fail the request.
+      console.error(`appendRun: cap-trim failed for ${file}: ${e.message}`);
+    }
+  });
+}
+
+/** Remove the whole history. Returns the number of runs cleared. */
+export async function clearRuns(file) {
+  return withFileLock(file, async () => {
+    const runs = await readRuns(file);
+    try { await fs.promises.rm(file, { force: true }); } catch { /* best-effort */ }
+    return runs.length;
+  });
+}
+
+async function handleApiRuns(req, res, config, rateLimited) {
+  const ip = req.socket.remoteAddress || 'x';
+  if (rateLimited(ip)) {
+    return err(res, 429, ERROR_CODES.RATE_LIMITED, 'too many requests from this address — wait a minute and retry');
+  }
+
+  if (req.method === 'GET') {
+    const runs = await readRuns(config.runsFile);
+    const rawLimit = new URL(req.url, 'http://x').searchParams.get('limit');
+    let limit = runs.length;
+    if (rawLimit !== null) {
+      const n = Number(rawLimit);
+      if (Number.isFinite(n) && n >= 0) limit = Math.min(runs.length, Math.floor(n));
+    }
+    const kept = limit >= runs.length ? runs : runs.slice(runs.length - limit);
+    return send(res, 200, { runs: [...kept].reverse(), count: runs.length });
+  }
+
+  if (req.method === 'DELETE') {
+    const cleared = await clearRuns(config.runsFile);
+    return send(res, 200, { cleared });
+  }
+
+  if (req.method !== 'POST') {
+    return err(res, 405, ERROR_CODES.FORBIDDEN, 'method not allowed on /api/runs');
+  }
+
+  let raw;
+  try {
+    raw = await readBody(req, config.maxBodyBytes);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      return err(res, 413, ERROR_CODES.PAYLOAD_TOO_LARGE, `request body exceeds the ${config.maxBodyBytes}-byte cap`);
+    }
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, `could not read request body: ${e.message}`);
+  }
+  let data;
+  try {
+    data = JSON.parse(raw.toString('utf8'));
+  } catch {
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, 'request body is not valid JSON');
+  }
+  const norm = normaliseRunRecord(data);
+  if (!norm.ok) {
+    return err(res, norm.error.status, norm.error.code, norm.error.message);
+  }
+  if (norm.dropped?.length) {
+    console.error(`[runs-debug] dropped secret-ish run fields: ${norm.dropped.join(', ')}`);
+  }
+  const record = norm.record;
+  if (Buffer.byteLength(JSON.stringify(record), 'utf8') > RUN_RECORD_MAX_BYTES) {
+    return err(res, 413, ERROR_CODES.PAYLOAD_TOO_LARGE, `run record exceeds the ${RUN_RECORD_MAX_BYTES}-byte cap`);
+  }
+  record.id = crypto.randomUUID();
+  record.at = new Date().toISOString();
+  await appendRun(config.runsFile, record);
+  return send(res, 201, record);
+}
+
 // ---- request handling ----------------------------------------------------
 function isValidPayload(payload) {
   return payload && typeof payload === 'object'
@@ -673,6 +931,10 @@ export function createServer(config = readConfig()) {
 
     if (url.pathname === '/api/jev' && req.method === 'POST') {
       return handleApiJev(req, res, config, rateLimited).catch(() =>
+        err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
+    }
+    if (url.pathname === '/api/runs') {
+      return handleApiRuns(req, res, config, rateLimited).catch(() =>
         err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
     }
     if (url.pathname === '/api/health') {

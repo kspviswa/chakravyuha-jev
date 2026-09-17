@@ -69,6 +69,35 @@ TYPESAFE_API_KEY=sk_... npm start    # server-side key, if you prefer it not in 
 TYPESAFE_MODEL=jev-latest npm start  # optional model override
 ```
 
+## Run history
+
+Every **completed** run (both skins, both modes, stub/live/replay) is recorded
+**server-side** into `runs.jsonl` (one JSON object per line, append-only, capped
+at the most recent **500** runs, git-ignored) — so the history survives a
+browser change and is visible from any device. The client computes the verdict
+(the referee's checks + the game-loop meters) and the scores; the server only
+whitelists fields, clamps numbers, drops unknown/credential-shaped keys, and
+stamps `id`/`at`. Recording is fire-and-forget and never alters the play flow's
+own response.
+
+- `history.html` — reachable from the play page header (**History →**), shows
+  stat cards grouped by **source · mode · skin** (different kinds of run are
+  never averaged together), a sortable run table, source/mode/skin filters,
+  CSV export of the current view, and a clear-history button.
+- Metrics: **speed** (`totalMs`, `msPerStep`), **optimality**
+  (`optimalSteps/steps` or `optimalCost/cost`, clamped, 1.0 = perfect, a
+  missed goal scores 0, an unreachable board scores `null` → excluded from the
+  mean), **accuracy** (`checksPassed/checksTotal`). Exact definitions live in
+  [`docs/METRICS.md`](docs/METRICS.md) and in the tooltip on the history page.
+- Statistics are sample variance/sample stddev (`n − 1` denominator): for
+  `n < 2` variance and stddev show **—**, never a false 0.
+- Endpoints: `POST /api/runs` (validate + normalise, stamp `id`/`at`, append,
+  201), `GET /api/runs` (`{ runs, count }`, newest first, `?limit=N`),
+  `DELETE /api/runs` (`{ cleared }`). All three respect the same body-size cap
+  and per-IP rate limit as `/api/jev`.
+- If the server is down the history page degrades to a localStorage cache of
+  the last successful fetch and says so instead of going blank.
+
 ## The three answer sources
 
 Every answer a client receives carries a `mode` field, and the UI badge shows one of three
@@ -101,10 +130,11 @@ and that secrets still 404 under the prefix. (`test/subpath.test.mjs`)
 
 ## Static, and only static
 
-The repo root *is* the webroot. `server.mjs` serves exactly `index.html`, `app.js`,
-`style.css`, `lib/` and `skins/`; anything else (`server.mjs`, `package.json`, `.git/`,
-`test/`, `fixtures/`, docs) is an explicit 404. A test walks the allowlist both at `/` and
-under the simulated subpath.
+The repo root *is* the webroot. `server.mjs` serves exactly `index.html`,
+`app.js`, `history.html`, `history.js`, `style.css`, `lib/` and `skins/`;
+anything else (`server.mjs`, `package.json`, `.git/`, `test/`, `fixtures/`,
+docs) is an explicit 404. A test walks the allowlist both at `/` and under the
+simulated subpath.
 
 ## Run tests
 
@@ -185,8 +215,12 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
   stub solver + replay + rate limit + meters + structured errors). The solver lives only
   in `stubAnswer()`, never called when any key is present.
 - `app.js` — the shell: base-path derivation, skin switch, keycard/transport, mode badge,
-  one `ask()` round trip, answer/meter/referee rendering, Export run. No pathfinding.
+  one `ask()` round trip, answer/meter/referee rendering, Export run, and fire-and-forget
+  run recording (`POST /api/runs`). No pathfinding.
 - `index.html`, `style.css` — UI (safe-area aware, tuned for 390×844 and 360×640).
+- `history.html`, `history.js` — the run-history page: stat cards grouped by
+  source · mode · skin, sortable table, filters, CSV, clear, empty state, offline cache.
+- `lib/stats.js` — the pure statistics helpers (mean/median/sample variance/stddev/min/max).
 - `lib/referee.js` — **verification only**; never chooses a move. `shortestPathLength`
   (BFS), `shortestCost` (Dijkstra), walkers, `boardQuality()` for generation sanity.
 - `lib/board.js` — grid + city board generation.
@@ -197,6 +231,8 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 - `scripts/record-fixtures.mjs` — deterministic regeneration of the committed fixtures.
 - `test/` — the `node --test` suite.
 - `docs/API.md` — the exact wire shape used here.
+- `docs/METRICS.md` — the exact definitions of speed / optimality / accuracy.
+- `runs.jsonl` — the git-ignored, append-only run history (capped at 500).
 
 ## Honest caveat
 

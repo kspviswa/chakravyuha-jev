@@ -207,12 +207,14 @@ async function askPlan(key) {
         : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
     showErrorCard(res.error?.code || 'error', res.error?.message || 'request failed', hint);
     if (res.body?.mode) setModeBadge(res.body.mode);
+    recordRun({ mode: 'plan', body: res.body || {}, v: null, outcome: 'error' });
     return false;
   }
 
   const body = res.body;
   if (!body) {
     showErrorCard('bad_response', 'server returned an empty or non-JSON response');
+    recordRun({ mode: 'plan', body: {}, v: null, outcome: 'error' });
     return false;
   }
 
@@ -234,6 +236,7 @@ async function askPlan(key) {
     steps: v.steps, cost: v.cost, weighted: !!currentSkin.weighted,
   });
   currentSkin.render(body);
+  recordRun({ mode: 'plan', body, v });
   return true;
 }
 
@@ -260,6 +263,8 @@ async function askPolicy(key) {
       ? 'Check the server is running, or switch to the proxy transport.'
       : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
     showErrorCard(e.code || 'error', e.message || 'request failed', hint);
+    const failedBody = { mode: game.calls[0]?.res?.mode || lastMode || 'stub' };
+    recordRun({ game, v: null, body: failedBody, outcome: 'error' });
     return false;
   }
 
@@ -284,6 +289,7 @@ async function askPolicy(key) {
   });
   currentSkin.render(body);
   setRunOutcome(game, v);
+  recordRun({ game, v, body });
   return true;
 }
 
@@ -404,6 +410,99 @@ function setRunOutcome(game, v) {
     el.classList.add('error');
     el.textContent = `${prefix} · error — the run could not finish.`;
   }
+}
+
+// ------------------------------------------------------- run recording
+// Every completed run is recorded server-side via POST /api/runs. The record
+// is built here from the verdict the shell already computed (setRunOutcome /
+// exportRun reuse the same objects); the server only whitelists, validates and
+// stamps id/at. Recording is fire-and-forget: it must never alter the play
+// flow's own response, so failures to save are logged, not thrown.
+//
+// BYOK: the key never travels in this POST and never reaches the record.
+
+/** FNV-1a over the board, so identical boards share a hash. */
+function boardHash(board) {
+  const rows = (board.rows || []).map((r) => (Array.isArray(r) ? r.join('') : r)).join('|');
+  const weights = board.weights
+    ? board.weights.map((r) => (Array.isArray(r) ? r.join(',') : r)).join(';')
+    : '';
+  let h = 2166136261;
+  const s = `${rows}/${weights}`;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16);
+}
+
+/**
+ * Assemble the run record the client knows how to compute. The verdict `v`
+ * comes from the referee (checks, reached, steps, optimal, cost); `game` is
+ * the policy run object (null in plan mode); `body` is the Jev-shaped
+ * response used for the meters (mode, model, times, cost).
+ */
+function buildRunRecord({ game, v, body, mode, outcome }) {
+  const board = currentSkin.board;
+  const skin = currentSkin.id;
+  if (!board || !body) return null;
+  const weighted = skin === 'gmaps';
+  const reached = v ? !!v.reached : (game ? !!game.reached : false);
+  const checks = v ? v.checks : [];
+  const passed = checks.filter((c) => c.pass).length;
+  const optimal = v ? v.optimal : null;
+  const steps = v ? v.steps : (game ? game.steps : 0);
+  const runOutcome = outcome || (game ? game.outcome : (v ? (v.hitWall ? 'wall' : v.reached ? 'reached' : 'stuck') : 'error'));
+
+  // optimality: 1.0 is perfect. A run that did not reach the goal scores 0;
+  // a board with no route (optimal === null) scores null → excluded from the
+  // mean rather than counted as 0.
+  let optimalityScore;
+  if (!reached) optimalityScore = optimal === null ? null : 0;
+  else if (optimal === null) optimalityScore = null;
+  else {
+    const ratio = weighted ? optimal / (v?.cost || 1) : optimal / (steps || 1);
+    optimalityScore = Math.max(0, Math.min(1, ratio));
+  }
+
+  return {
+    skin,
+    mode,
+    source: body.mode === 'replay' ? 'replay' : body.mode === 'live' ? 'live' : (lastMode === 'replay' ? 'replay' : lastMode === 'live' ? 'live' : 'stub'),
+    model: body.model || null,
+    board: {
+      rows: board.R, cols: board.C,
+      difficulty: board.difficulty || board.size || null,
+      hash: boardHash(board),
+    },
+    outcome: runOutcome,
+    reached,
+    steps,
+    optimalSteps: optimal,
+    cost: weighted ? (v ? v.cost : null) : null,
+    optimalCost: weighted ? optimal : null,
+    checksPassed: passed,
+    checksTotal: checks.length,
+    totalMs: game ? game.totalMs : (body._ms ?? 0),
+    lastStepMs: game ? game.lastMs : (body._ms ?? 0),
+    calls: game ? game.calls.length : 1,
+    questions: game ? game.totalQuestions : (body._questions ?? 0),
+    costUsd: game ? game.totalCostUsd : (body._cost_usd ?? 0),
+    optimalityScore,
+    accuracyScore: checks.length ? passed / checks.length : null,
+  };
+}
+
+/** Send the record; never throws, never touches the play response. */
+function recordRun(opts) {
+  const record = buildRunRecord(opts);
+  if (!record) return;
+  fetch(`${BASE}api/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(record),
+  }).then((r) => {
+    if (!r.ok) console.warn(`run record not saved (HTTP ${r.status})`);
+  }).catch((e) => {
+    console.warn('run record not saved:', e && e.message ? e.message : e);
+  });
 }
 
 // ----------------------------------------------------------------- export

@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 
 // The files the server actually allowlists as static (mirrors server.mjs).
-const CLIENT_FILES = ['index.html', 'app.js', 'style.css'];
+const CLIENT_FILES = ['index.html', 'app.js', 'history.html', 'history.js', 'style.css'];
 const CLIENT_DIRS = ['lib', 'skins'];
 
 function walk(dir) {
@@ -47,8 +47,13 @@ test('every src/href referenced by index.html resolves to a served asset', () =>
     assert.ok(fs.existsSync(resolved), `missing asset referenced by index.html: ${ref}`);
   }
 
-  // the module graph: app.js imports lib/* and skins/*; skins import lib/*
-  const modules = [path.join(ROOT, 'app.js'), ...CLIENT_DIRS.flatMap((d) => walk(path.join(ROOT, d)).filter((f) => f.endsWith('.js')))];
+  // the module graph: app.js imports lib/* and skins/*; skins import lib/*;
+  // history.js imports lib/* (stats, transport)
+  const modules = [
+    path.join(ROOT, 'app.js'),
+    path.join(ROOT, 'history.js'),
+    ...CLIENT_DIRS.flatMap((d) => walk(path.join(ROOT, d)).filter((f) => f.endsWith('.js'))),
+  ];
   for (const file of modules) {
     const src = fs.readFileSync(file, 'utf8');
     for (const m of src.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) {
@@ -61,13 +66,34 @@ test('every src/href referenced by index.html resolves to a served asset', () =>
 // ---- 2. syntax parse ----------------------------------------------------------
 test('every client .js parses as an ES module (node --check)', () => {
   const files = clientTree().filter((f) => f.endsWith('.js'));
-  assert.ok(files.length >= 6, `expected app.js + lib/* + skins/* (got ${files.length})`);
+  assert.ok(files.length >= 7, `expected app.js + lib/* + skins/* + history.js (got ${files.length})`);
   for (const file of files) {
     const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
     assert.equal(r.status, 0, `${path.relative(ROOT, file)} failed to parse:\n${r.stderr}`);
   }
   const server = spawnSync(process.execPath, ['--check', path.join(ROOT, 'server.mjs')], { encoding: 'utf8' });
   assert.equal(server.status, 0, `server.mjs failed to parse:\n${server.stderr}`);
+});
+
+test('history.html references only served assets and links back to the play page', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'history.html'), 'utf8');
+  assert.match(html, /<title>PathPuzzle/);
+  assert.match(html, /src=["']\.\/history\.js["']/, 'history.html loads history.js');
+  assert.match(html, /href=["']\.\/style\.css["']/, 'history.html shares style.css');
+  assert.match(html, /href=["']\.\/index\.html["']/, 'history.html links back to the play page');
+  const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/g)].map((m) => m[1]);
+  const localRefs = refs.filter((r) => !(r.startsWith('#') || /^(https?:|data:|mailto:|about:)/i.test(r)));
+  for (const ref of localRefs) {
+    const resolved = path.resolve(path.join(ROOT, ref));
+    const rel = path.relative(ROOT, resolved);
+    assert.ok(!rel.startsWith('..') && !path.isAbsolute(rel), `ref escapes the client tree: ${ref}`);
+    assert.ok(fs.existsSync(resolved), `missing asset referenced by history.html: ${ref}`);
+  }
+});
+
+test('index.html links to the history page', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  assert.match(html, /history\.html/, 'the play page links to history.html');
 });
 
 // ---- 3. no pathfinding in the game loop ---------------------------------------

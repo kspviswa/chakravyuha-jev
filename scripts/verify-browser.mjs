@@ -160,6 +160,37 @@ await new Promise((r) => setTimeout(r, 50));
   const excess = overflow.result?.value ?? 0;
   if (excess > 1) throw new Error(`horizontal overflow of ${excess}px at ${vp.name}/${route.name}`);
   console.log('  no horizontal overflow (<=1px): ok');
+
+  // ---- run history page: stat cards + table render, no page-level sideways scroll
+  const histPath = route.path === '/' ? '/history.html' : `${PREFIX}/history.html`;
+  const histLoaded = cdp.once('Page.loadEventFired');
+  await cdp.send('Page.navigate', { url: `${base}${histPath}` });
+  await histLoaded;
+  const hist = await evalCond(cdp, `(() => {
+    const cards = document.querySelectorAll('.stat-card');
+    const rows = document.querySelectorAll('#runs-table tbody tr');
+    const empty = document.querySelector('.empty-state');
+    return {
+      done: cards.length > 0 || !!empty,
+      err: !!document.querySelector('#notice')?.hidden ? false : !!document.querySelector('#notice')?.textContent.includes('Server unreachable'),
+      cards: cards.length,
+      rows: rows.length,
+      empty: !!empty,
+    };
+  })()`);
+  if (hist.err) throw new Error('history page could not reach the run API');
+  if (hist.empty) throw new Error('history page showed the empty state — expected seeded runs');
+  if (!(hist.cards >= 1 && hist.rows >= 2)) {
+    throw new Error(`history rendered but missing expected content (cards=${hist.cards}, rows=${hist.rows})`);
+  }
+  if (route.name === 'root') await shot(cdp, `history-${vp.name}`);
+  const hOverflow = await cdp.send('Runtime.evaluate', {
+    expression: `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
+    returnByValue: true,
+  });
+  const hExcess = hOverflow.result?.value ?? 0;
+  if (hExcess > 1) throw new Error(`history page horizontal overflow of ${hExcess}px at ${vp.name}/${route.name}`);
+  console.log(`  history page: ${hist.cards} stat card(s), ${hist.rows} run row(s), no overflow: ok`);
 }
 
 // ---------------------------------------------------------------- server + prefix proxy

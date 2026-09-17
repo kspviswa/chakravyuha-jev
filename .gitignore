@@ -4,3 +4,6 @@ node_modules/
 .env.*
 fixtures/recorded/*.live.json
 artifacts/
+runs.jsonl
+runs.jsonl.tmp
+cache/

@@ -128,6 +128,44 @@ pre{font:12px var(--mono);color:#a9b1c4;overflow:auto;max-height:280px;margin:10
 
 footer{color:#5c6478;font-size:12px;padding:0 22px 30px;max-width:1320px;margin:0 auto}
 
+/* ---- run history page --------------------------------------------------- */
+.navlink{font:12px var(--mono);color:var(--accent2);text-decoration:none;border:1px solid var(--line);padding:4px 10px;border-radius:99px;white-space:nowrap}
+.navlink:hover{background:#1a1e28}
+main.hist{display:flex;flex-direction:column;gap:16px;max-width:1320px;margin:0 auto;padding:22px;align-items:stretch}
+/* A flex child with wide content (the runs table) otherwise overflows the column
+   instead of letting its own scroller take over — the page then scrolls sideways. */
+main.hist>*{min-width:0;max-width:100%}
+.hist-toolbar{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.filters{display:flex;gap:10px;flex-wrap:wrap}
+.filters label{flex-direction:column;gap:4px}
+.hist-actions{display:flex;gap:8px;flex-wrap:wrap}
+button.danger{color:var(--bad);border-color:#6b2230}
+button.danger:hover{background:#2a1118}
+.hist-notice{font-size:12.5px;color:var(--warn);background:#1d1704;border:1px solid #5a4515;border-radius:9px;padding:10px 12px}
+.metric-defs ul{margin:8px 0 0;padding-left:20px;color:#a9b1c4;font-size:13px;display:flex;flex-direction:column;gap:6px}
+.metric-defs code{font:12px var(--mono);background:#22262f;padding:1px 5px;border-radius:5px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;align-items:start}
+.stat-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}
+.group-key{font:600 14px var(--mono);margin:0 0 10px;color:var(--ink)}
+.group-key em{color:var(--dim);font-style:normal;font-size:12px;margin-left:6px}
+.group-key .src,.src{margin-right:2px}
+.src.live{color:var(--accent)} .src.stub{color:var(--warn)} .src.replay{color:var(--accent3)}
+.stat-table-scroll{overflow-x:auto;width:100%;max-width:100%}
+.stat-table,.runs-table{border-collapse:collapse;width:100%;font:12.5px var(--mono)}
+.stat-table th,.stat-table td,.runs-table th,.runs-table td{border-bottom:1px dashed #1e222c;padding:6px 8px;text-align:left;white-space:nowrap}
+.stat-table th,.runs-table th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em;cursor:pointer;user-select:none}
+.stat-table td.m-label{color:var(--dim)}
+.var-note{font-size:11.5px;color:var(--dim);margin:8px 0 0}
+.runs-block{min-width:0}
+.table-scroll{overflow-x:auto;max-width:100%;width:100%}
+/* Let the table be as wide as it needs INSIDE the scroller (never the page). */
+.runs-table{min-width:max-content}
+.runs-table td:first-child{position:sticky;left:0;background:var(--panel)}
+.runs-table .nowrap{white-space:nowrap}
+.empty-state{text-align:center}
+.empty-state a.navlink{display:inline-block;margin-top:6px}
+footer a.navlink{border-color:transparent;padding:0}
+
 @media(max-width:480px){
   main{padding:12px;gap:14px}
   .top{padding:10px 12px}
@@ -147,4 +185,10 @@ footer{color:#5c6478;font-size:12px;padding:0 22px 30px;max-width:1320px;margin:
   #key-field{min-width:0;width:100%}
   #transport{width:100%;max-width:100%;font-size:12px}
   .skinbar{flex-wrap:wrap}
+  main.hist{padding:12px}
+  .hist-toolbar{flex-direction:column;align-items:stretch}
+  .hist-actions{flex-wrap:nowrap}
+  .hist-actions button{flex:1;padding:10px 8px}
+  .stat-grid{grid-template-columns:1fr;min-width:0}
+  .filtered-count{font-size:12px}
 }

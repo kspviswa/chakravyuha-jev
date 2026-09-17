@@ -52,12 +52,12 @@ test('health reports hasEnvKey when a server-side key exists', async () => {
 test('the client tree is served, the server source is not', async () => {
   const ctx = await startServer({});
   try {
-    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/gmaps.js']) {
+    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/gmaps.js', '/history.html', '/history.js']) {
       const r = await fetch(`${ctx.base}${asset}`);
       assert.equal(r.status, 200, `${asset} served`);
-      assert.match(r.headers.get('content-type'), /javascript|css/, `${asset} MIME`);
+      assert.match(r.headers.get('content-type'), /javascript|css|html/, `${asset} MIME`);
     }
-    for (const secret of ['/server.mjs', '/package.json', '/.git/config', '/fixtures/index.json', '/test/helpers.mjs']) {
+    for (const secret of ['/server.mjs', '/package.json', '/.git/config', '/fixtures/index.json', '/test/helpers.mjs', '/runs.jsonl']) {
       const r = await fetch(`${ctx.base}${secret}`);
       assert.equal(r.status, 404, `${secret} must not be served`);
     }

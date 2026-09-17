@@ -52,7 +52,7 @@ test('subpath: the game page and every asset exist under /abhimanyu/', async () 
     assert.match(index.headers.get('content-type'), /text\/html/);
     assert.match(await index.text(), /<title>PathPuzzle/);
 
-    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/lib/referee.js', '/abhimanyu/skins/gmaps.js']) {
+    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/lib/referee.js', '/abhimanyu/skins/gmaps.js', '/abhimanyu/history.html', '/abhimanyu/history.js']) {
       const r = await fetch(`${base}${asset}`);
       assert.equal(r.status, 200, asset);
     }
@@ -114,7 +114,7 @@ test('subpath: a BYOK key crosses the prefix and drives live against the mock', 
 
 test('subpath: secrets stay unservable under the prefix too', async () => {
   await withPrefixed(null, async (base) => {
-    for (const secret of ['/abhimanyu/server.mjs', '/abhimanyu/package.json', '/abhimanyu/.git/config', '/abhimanyu/test/helpers.mjs']) {
+    for (const secret of ['/abhimanyu/server.mjs', '/abhimanyu/package.json', '/abhimanyu/.git/config', '/abhimanyu/test/helpers.mjs', '/abhimanyu/runs.jsonl']) {
       const r = await fetch(`${base}${secret}`);
       assert.equal(r.status, 404, secret);
     }
