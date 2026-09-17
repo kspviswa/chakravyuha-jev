@@ -50,7 +50,7 @@ test('health reports hasEnvKey when a server-side key exists', async () => {
 test('the client tree is served, the server source is not', async () => {
   const ctx = await startServer({});
   try {
-    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/chakravyuha.js', '/history.html', '/history.js', '/assets/abhimanyu.jpg']) {
+    for (const asset of ['/app.js', '/style.css', '/skins/chakravyuha.js', '/history.html', '/history.js', '/assets/abhimanyu.jpg']) {
       const r = await fetch(`${ctx.base}${asset}`);
       assert.equal(r.status, 200, `${asset} served`);
       assert.match(r.headers.get('content-type'), /javascript|css|html|image/, `${asset} MIME`);
@@ -153,7 +153,8 @@ test('oversized body is a 413 payload_too_large', async () => {
 test('too many questions per request is a typed 400', async () => {
   const ctx = await startServer({ maxQuestions: 2 });
   try {
-    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD); // 4 questions
+    const payload = { state: CH_PAYLOAD.state, questions: { a: {}, b: {}, c: {}, d: {} } };
+    const { status, body } = await postJev(ctx.base, payload);
     assert.equal(status, 400);
     assert.equal(body.error?.code, 'too_many_questions');
   } finally {
@@ -178,14 +179,12 @@ test('per-IP rate limit kicks in past RATE_LIMIT', async () => {
 
 // ---- there is no replay mode any more --------------------------------------
 test('no replay: the replay config knob and its error codes are gone', async () => {
-  const ctx = await startServer({ replay: 'easy' });
+  const ctx = await startServer({});
   try {
-    // Even asked for a replay mode, the shim refuses without a key rather than
-    // serving anything recorded.
     const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(status, 401);
     assert.equal(body.error?.code, 'no_key');
-    assert.notEqual(body.mode, 'replay');
+    assert.equal(body.mode, undefined);
     assert.equal(body.answers, undefined);
   } finally {
     await stopServer(ctx);
@@ -193,7 +192,7 @@ test('no replay: the replay config knob and its error codes are gone', async () 
 });
 
 test('no replay: no fixture directory is read at boot', async () => {
-  const ctx = await startServer({ replay: '1' });
+  const ctx = await startServer({});
   try {
     const { status } = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(status, 401, 'no fixture lookup happens; it is a plain refusal');
@@ -206,10 +205,10 @@ test('no replay: no fixture directory is read at boot', async () => {
 const MOCK_LIVE_BODY = {
   model: 'mock-jevv-9000',
   answers: {
-    reachable: { type: 'noul', noul: 0.42 },
-    move_inward: { type: 'noul', noul: 0.99 },
-    route_length: { type: 'choice', choice: '1-5', probabilities: { '1-5': 0.8 }, confidence: 0.8 },
-    maze_difficulty: { type: 'score', score: 1, probabilities: { '1': 0.6 }, confidence: 0.6 },
+    step_1: { type: 'choice', choice: 'inward' },
+    step_2: { type: 'choice', choice: 'clockwise' },
+    step_3: { type: 'choice', choice: 'inward' },
+    step_4: { type: 'choice', choice: 'outward' },
   },
   usage: { input_tokens: 1000, output_tokens: 7 },
 };
@@ -218,7 +217,8 @@ test('live (env key): proxies to the upstream and reports the meters', async () 
   const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
   const ctx = await startServer({ apiKey: 'sk-env-key', upstream: `${upstream.base}/v1/systemone` });
   try {
-    const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
+    const fourQ = { state: CH_PAYLOAD.state, questions: { a: {}, b: {}, c: {}, d: {} } };
+    const { status, body } = await postJev(ctx.base, fourQ);
     assert.equal(status, 200);
     assert.equal(body.mode, 'live');
     assert.deepEqual(body.answers, MOCK_LIVE_BODY.answers);

@@ -21,7 +21,7 @@ import {
   askJev, runPolicyGame, buildPolicyBody,
   buildPolicyChakraState,
 } from './lib/jev.js';
-import { boardHash } from './lib/chakra.js';
+import { boardHash, computeStepAccuracy } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');

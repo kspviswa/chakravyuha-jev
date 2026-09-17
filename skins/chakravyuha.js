@@ -160,19 +160,19 @@ export const chakraSkin = {
     });
   },
 
-check(moves) {
+  check(moves) {
     return { reached: this._checkReached(moves), steps: moves.length, optimal: this._optimalLength() };
-  }
+  },
 
   _checkReached(moves) {
     // Simple reach check: did the last move land on the centre?
     const last = moves[moves.length - 1];
     return last === 'inward' && this.pos.ring === 0;
-  }
+  },
 
   _optimalLength() {
     return null;
-  }
+  },
 
   /** Post-run overlay: the shortest route, drawn only now. */
   render() {
@@ -325,7 +325,7 @@ check(moves) {
     // run has genuinely finished at the centre.
     this._drawBurst(ctx, mid, unit);
 
-    // referee overlay — only after the run finished (verdict cached by check())
+    // comparison overlay — only after the run finished (verdict cached by check())
     this._drawOverlay(ctx, width, unit);
     this._publishHook();
   },

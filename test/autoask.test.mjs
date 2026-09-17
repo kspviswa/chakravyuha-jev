@@ -116,10 +116,9 @@ test('mount: the skin wires listeners and draws, but never calls out', () => {
   assert.ok(body.includes('newBoard()'), 'it does draw the initial maze');
 });
 
-test('the referee verdict is only ever produced after a run', () => {
+// ---- the verdict is only produced after a run -----------------------------
+test('check() is always called after a Jev response, never on boot', () => {
   const app = read('app.js');
-  // chakraVerdict is reached only through the skin's check(), which the shell
-  // calls after a response has come back.
   const checks = [...app.matchAll(/currentSkin\.check\(/g)];
   assert.ok(checks.length >= 1, 'the shell grades runs');
   for (const m of checks) {
@@ -132,9 +131,10 @@ test('the referee verdict is only ever produced after a run', () => {
 // ---- the skin cannot even reach a solver ----------------------------------
 test('the skin has no solver to call on load, even by accident', () => {
   const skin = read('skins/chakravyuha.js');
-  const refereeImport = skin.match(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/lib\/referee\.js'/);
-  assert.ok(refereeImport, 'the skin imports from the referee');
-  const names = refereeImport[1].split(',').map((s) => s.trim());
-  assert.deepEqual(names, ['chakraVerdict'],
-    'the skin may only import the verdict — never a route or a quality check');
+  assert.ok(!skin.match(/import\s*\{[^}]*\}\s*from\s*'\.\.\/lib\/referee\.js'/), 'the skin has no referee import');
+  assert.doesNotMatch(skin, /\bchakraVerdict\b/, 'the skin does not reference the verdict');
+  assert.doesNotMatch(skin, /\bchakraShortest\b/, 'the skin never computes a route up front');
+  assert.doesNotMatch(skin, /\breferee\b/i, 'and never mentions the referee by name');
 });
+
+

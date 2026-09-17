@@ -2,8 +2,9 @@
 //
 //   1. There is no stub solver and no replay mode anywhere. The app is LIVE-only:
 //      a key, or a typed refusal. Nothing is ever answered from local code.
-//   2. No pathfinding lives in the game loop. lib/referee.js is the ONLY place a
-//      route may be computed, and only to check an answer.
+//   2. No search lives in the game loop. lib/chakra.js is the only place a
+//      route may be computed, and only to check an answer or compute the
+//      shortest route after a run ends.
 //   3. POST /api/jev without a key is a 401 no_key — and it never fabricates an
 //      answer, and never even contacts the upstream.
 
@@ -58,39 +59,38 @@ test('no stub: no recorded fixtures or geo snapshots remain in the tree', () => 
   assert.ok(!fs.existsSync(path.join(ROOT, 'scripts', 'record-geo-snapshots.mjs')));
 });
 
-// ---- 2 · no pathfinding in the loop ---------------------------------------
-test('no solver: no search algorithm is implemented outside lib/referee.js', () => {
+// ---- 2 · no search in the loop --------------------------------------------
+test('no solver: no search algorithm is implemented outside lib/chakra.js', () => {
   const banned = /\bastar\b|\ba\s*\*\s*search\b|dijkstra|\bbfs\b|heuristic|priorityqueue|minheap/i;
   const offenders = [];
   for (const { name, text } of runtimeFiles()) {
-    if (name === 'lib/referee.js') continue; // the one allowed place
+    if (name === 'lib/chakra.js') continue; // the one allowed place
     text.split('\n').forEach((line, i) => {
       if (banned.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
     });
   }
-  assert.deepEqual(offenders, [], `search code must live only in lib/referee.js:\n${offenders.join('\n')}`);
+  assert.deepEqual(offenders, [], `search code must live only in lib/chakra.js:\n${offenders.join('\n')}`);
 });
 
-test('no solver: the game loop never asks the referee for a route', () => {
+test('no solver: the game loop never calls shortest', () => {
   const loop = ['app.js', 'history.js', 'skins/chakravyuha.js', 'server.mjs'];
   for (const name of loop) {
     const p = path.join(ROOT, name);
     if (!fs.existsSync(p)) continue;
     const text = fs.readFileSync(p, 'utf8');
-    assert.ok(!/chakraShortest/.test(text), `${name} must not compute a shortest route`);
-    assert.ok(!/chakraQuality/.test(text), `${name} must not run the generation quality check`);
+    assert.ok(!/shortest\s*\(/.test(text), `${name} must not compute a shortest route`);
   }
 });
 
-test('no solver: lib/chakra.js uses the referee only for generation sanity', () => {
+test('no solver: lib/chakra.js uses search only for generation and post-run', () => {
   const chakra = fs.readFileSync(path.join(ROOT, 'lib', 'chakra.js'), 'utf8');
-  assert.ok(!/chakraShortest/.test(chakra), 'generation never needs the shortest route itself');
-  assert.ok(/chakraQuality/.test(chakra), 'but it does verify solvability');
+  assert.ok(/\bshortest\b/.test(chakra), 'generation and post-run use shortest');
+  assert.ok(!/chakraShortest/.test(chakra), 'no old name');
 });
 
-test('no solver: the skin only ever verifies, via chakraVerdict', () => {
+test('no solver: the skin has no solver to call on load', () => {
   const skin = fs.readFileSync(path.join(ROOT, 'skins', 'chakravyuha.js'), 'utf8');
-  assert.ok(/chakraVerdict/.test(skin), 'the skin asks for a verdict after the run');
+  assert.ok(!/chakraVerdict/.test(skin), 'the skin does not import the verdict');
   assert.ok(!/chakraShortest/.test(skin), 'and never for the route up front');
 });
 
@@ -98,7 +98,7 @@ test('no solver: the skin only ever verifies, via chakraVerdict', () => {
 let ctx;
 let mock;
 before(async () => {
-  mock = await startMockUpstream({ status: 200, body: { answers: { move_inward: { type: 'noul', noul: 1 } } } });
+  mock = await startMockUpstream({ status: 200, body: { answers: { next_move: { type: 'choice', choice: 'inward' } }, usage: { input_tokens: 10, output_tokens: 2 } } });
   ctx = await startServer({ apiKey: '', upstream: mock.base });
 });
 after(async () => {

@@ -294,10 +294,11 @@ export function normaliseRunRecord(input) {
       ['calls', 0, 1e6], ['questions', 0, 1e6],
       ['tokensIn', 0, 1e10], ['tokensOut', 0, 1e10],
       ['costUsd', 0, 1e6], ['stepAccuracy', 0, 1], ['correctSteps', 0, 1e6],
-      ['elapsedMs', 0, 1e12], ['moves', 0, 1e6],
+      ['elapsedMs', 0, 1e12],
     ]) {
       if (key in src) rec[key] = optionalNum(src, key, min, max);
     }
+    if ('moves' in src && Array.isArray(src.moves)) rec.moves = src.moves;
     if ('boardHash' in src) rec.boardHash = optionalStr(src, 'boardHash', 200);
     if ('model' in src) rec.model = optionalStr(src, 'model', 200);
     return { ok: true, record: rec, dropped: note };

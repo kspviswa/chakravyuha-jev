@@ -31,12 +31,14 @@ const VALID_RUN = {
   lastStepMs: 41,
   msPerStep: 36.8,
   calls: 22,
-  questions: 2,
+  questions: 1,
   tokensIn: 2400,
   tokensOut: 480,
   costUsd: 0.000478,
-  optimalityScore: 1,
-  accuracyScore: 1,
+  stepAccuracy: 1.0,
+  correctSteps: 22,
+  moves: ['inward', 'clockwise'],
+  elapsedMs: 4200,
 };
 
 async function postRun(base, record) {
@@ -191,15 +193,30 @@ test('a record containing apiKey / x-jev-key is stored WITHOUT them', async () =
 test('normaliseRunRecord drops secret-ish fields and clamps numbers', () => {
   const { ok, record, dropped } = normaliseRunRecord({
     ...VALID_RUN,
-    optimalityScore: 5, // out of range → clamp to 1
+    stepAccuracy: 5, // out of range → clamp to 1
     apiKey: 'sk-x',
   });
   assert.equal(ok, true);
-  assert.equal(record.optimalityScore, 1);
+  assert.equal(record.stepAccuracy, 1);
   assert.ok(dropped.includes('apiKey'));
   assert.equal(record.apiKey, undefined);
   const bad = normaliseRunRecord('not-an-object');
   assert.equal(bad.ok, false);
+});
+
+test('normaliseRunRecord rejects retired fields', () => {
+  const { ok, record } = normaliseRunRecord({
+    ...VALID_RUN,
+    optimalityScore: 1,
+    accuracyScore: 1,
+    checksPassed: 5,
+    checksTotal: 5,
+  });
+  assert.equal(ok, true);
+  assert.equal(record.optimalityScore, undefined);
+  assert.equal(record.accuracyScore, undefined);
+  assert.equal(record.checksPassed, undefined);
+  assert.equal(record.checksTotal, undefined);
 });
 
 // ---- cap + corrupt lines + restart ----------------------------------------

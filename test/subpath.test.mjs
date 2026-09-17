@@ -52,7 +52,7 @@ test('subpath: the game page and every asset exist under /abhimanyu/', async () 
     assert.match(index.headers.get('content-type'), /text\/html/);
     assert.match(await index.text(), /<title>Chakravyuha/);
 
-    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/lib/referee.js', '/abhimanyu/skins/chakravyuha.js', '/abhimanyu/history.html', '/abhimanyu/history.js']) {
+    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/skins/chakravyuha.js', '/abhimanyu/history.html', '/abhimanyu/history.js']) {
       const r = await fetch(`${base}${asset}`);
       assert.equal(r.status, 200, asset);
     }

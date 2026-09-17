@@ -46,7 +46,7 @@ function mockFetch(records) {
     return {
       ok: true,
       status: 200,
-      json: async () => ({ answers: {}, mode: 'stub' }),
+      json: async () => ({ answers: { next_move: { type: 'choice', choice: 'inward' } }, mode: 'live', usage: { input_tokens: 10, output_tokens: 2 } }),
     };
   };
 }

@@ -181,7 +181,7 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
 - `no-stub.test.mjs` — no stub, no replay, no fixtures; no search outside lib/chakra.js;
   and a keyless request is a `401 no_key` that never contacts the upstream.
 - `static.test.mjs` — invariant that `lib/jev.js` must not reference `shortest`, and no
-  `referee` token anywhere in the repo.
+   `judge` token anywhere in the repo.
 - `runs.test.mjs` — run-history validation, secret-key dropping, the 500-cap, corrupt
   lines, restart survival, and the guarantee that recording never alters the play flow.
 - `server` / `static` / `subpath` / `transport` / `debug-log` / `stats` / `icons` — the

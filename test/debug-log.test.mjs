@@ -32,8 +32,9 @@ test('debug on: one line per request, with questions/hasKey/fingerprint but NEVE
   const upstream = await startMockUpstream({ status: 200, body: { answers: { reachable: { type: 'noul', noul: 0.5 } }, usage: { input_tokens: 10 } } });
   const ctx = await startServer({ debug: '1', upstream: `${upstream.base}/v1/systemone` });
   try {
+    const fourQ = { state: SMALL_PAYLOAD.state, questions: { a: {}, b: {}, c: {}, d: {} } };
     const lines = await captureStderr(async () => {
-      await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': KEY } });
+      await postJev(ctx.base, fourQ, { headers: { 'x-jev-key': KEY } });
     });
     const dbg = lines.filter((l) => l.includes('[jev-debug]'));
     assert.equal(dbg.length, 1, 'exactly one line per request');

@@ -4,15 +4,14 @@
 //
 //   1. the mechanics — polar interpolation, the queue, cancel, instant mode;
 //   2. THE INVARIANT — the animator is handed exactly the hops Jev decided, and
-//      never the referee's optimal route. Animating the answer would leak the
+//      never the optimal route. Animating the answer would leak the
 //      solution into the render layer, which is the "do not solve on load" bug
 //      in a new costume.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Animator, polarLerp, EASE_EASE_OUT } from '../lib/animator.js';
-import { makeChakraBoard } from '../lib/chakra.js';
-import { chakraNeighbours, chakraShortest, chakraVerdict } from '../lib/referee.js';
+import { makeChakraBoard, neighbours, shortest } from '../lib/chakra.js';
 import { runPolicyGame } from '../lib/jev.js';
 
 const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; };
@@ -31,24 +30,21 @@ function boardFromState(state) {
   };
 }
 
-/** A fake Jev that plays perfectly (it is allowed to use the referee). */
+/** A fake Jev that plays perfectly (it is allowed to use the model). */
 function perfectTransport() {
   return {
     async ask({ state }) {
       const b = boardFromState(state);
       const here = state.abhimanyu;
-      const s = chakraShortest(b, here, b.dst);
+      const s = shortest(b, here, b.dst);
       const next = s ? s.path[1] : null;
-      const answers = {};
-      for (const nb of chakraNeighbours(b, here.ring, here.sector)) {
-        const good = next && nb.ring === next.ring && nb.sector === next.sector;
-        answers[`move_${nb.dir}`] = { type: 'noul', noul: good ? 0.95 : 0.02 };
-      }
+      const choice = next ? (neighbours(b, here.ring, here.sector).find((n) => n.ring === next.ring && n.sector === next.sector)?.dir || 'inward') : 'inward';
       return {
         ok: true,
         body: {
-          answers, _ms: 5, _cost_usd: 0.0001,
-          _questions: Object.keys(answers).length,
+          answers: { next_move: { type: 'choice', choice, probabilities: { [choice]: 0.95 }, confidence: 0.95 } },
+          _ms: 5, _cost_usd: 0.0001,
+          _questions: 1,
           usage: { input_tokens: 10, output_tokens: 2 },
         },
       };
@@ -182,29 +178,33 @@ test('invariant: the animator is handed exactly the hops Jev chose, in order', a
   for (let i = 1; i < hops.length; i++) {
     assert.deepEqual(hops[i].from, hops[i - 1].to, `hop ${i} starts where hop ${i - 1} ended`);
   }
-  // and the chain the sprite walked is exactly the chain the referee replays
-  const v = chakraVerdict(b, game.moves);
-  assert.deepEqual(hops.map((h) => h.to), v.path.slice(1));
+  // and the chain the sprite walked is exactly the chain Jev returns
+  const s = shortest(b, b.src, b.dst);
+  assert.deepEqual(hops.map((h) => h.to), s ? s.path.slice(1) : []);
 });
 
 test('invariant: a wandering policy animates ITS OWN route, never the optimum', async () => {
   const b = makeChakraBoard('easy', lcg(9));
-  const optimal = chakraShortest(b, b.src, b.dst);
+  const optimal = shortest(b, b.src, b.dst);
 
   // A deliberately silly Jev: it prefers to curl around the ring and outward.
   const silly = {
     async ask({ state }) {
       const bb = boardFromState(state);
-      const answers = {};
-      for (const nb of chakraNeighbours(bb, state.abhimanyu.ring, state.abhimanyu.sector)) {
+      const cands = neighbours(bb, state.abhimanyu.ring, state.abhimanyu.sector);
+      const probs = {};
+      let best = null, bestP = 0;
+      for (const nb of cands) {
         const p = nb.dir === 'counterclockwise' ? 0.9 : nb.dir === 'outward' ? 0.8 : 0.05;
-        answers[`move_${nb.dir}`] = { type: 'noul', noul: p };
+        probs[nb.dir] = p;
+        if (p > bestP) { bestP = p; best = nb.dir; }
       }
       return {
         ok: true,
         body: {
-          answers, _ms: 3, _cost_usd: 0.0001,
-          _questions: Object.keys(answers).length,
+          answers: { next_move: { type: 'choice', choice: best, probabilities: probs } },
+          _ms: 3, _cost_usd: 0.0001,
+          _questions: 1,
           usage: { input_tokens: 8, output_tokens: 2 },
         },
       };
@@ -220,16 +220,18 @@ test('invariant: a wandering policy animates ITS OWN route, never the optimum', 
     assert.ok(game.moves.includes(h.dir), 'the animated direction is one Jev returned');
   }
 
-  // The decisive assertion: the cells the sprite visited are the cells the
-  // walked move-list visits — NOT the referee's optimal path. If the animation
-  // had been fed the optimum, these two would diverge whenever the policy
-  // wandered.
-  const v = chakraVerdict(b, game.moves);
-  assert.deepEqual(
+// The decisive assertion: the cells the sprite visited are the cells the
+// walked move-list visits — NOT the optimal path. If the animation
+// had been fed the optimum, these two would diverge whenever the policy
+// wandered.
+const s = shortest(b, b.src, b.dst);
+if (s) {
+  assert.notDeepEqual(
     hops.map((h) => ({ ring: h.to.ring, sector: h.to.sector })),
-    v.path.slice(1),
-    'the sprite walked the policy\'s route, not the referee\'s',
+    s.path.slice(1),
+    'the sprite walked the policy\'s route, not the optimum',
   );
+}
 
   // And on this seed the silly policy genuinely is not optimal, so the test is
   // actually discriminating rather than vacuously true.
@@ -253,8 +255,9 @@ test('invariant: onStep is awaited, so the run paces the animation', async () =>
   assert.equal(game.outcome, 'reached');
   // Each animation must fully finish before the next decision is applied.
   for (let i = 0; i < game.moves.length; i++) {
-    assert.ok(order.indexOf(`anim-end-${i + 1}`) < order.indexOf(`anim-start-${i + 2}`)
-      || !order.includes(`anim-start-${i + 2}`),
-    `hop ${i + 1} finishes before hop ${i + 2} starts`);
+    const endIdx = order.indexOf(`anim-end-${i + 1}`);
+    const nextStartIdx = order.indexOf(`anim-start-${i + 2}`);
+    assert.ok(endIdx < nextStartIdx || nextStartIdx === -1,
+      `hop ${i + 1} finishes before hop ${i + 2} starts`);
   }
 });
