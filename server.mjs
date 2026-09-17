@@ -26,6 +26,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  PLACE_PAIRS, ATTRIBUTION, parseBbox, validateBbox, expandBbox, bboxKey,
+  latLonToCell, cellCenter, parseOverpass, rasterize, snapCell, applyCongestion,
+  boardFromGeo,
+} from './lib/geo.js';
+import { shortestCost } from './lib/referee.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STATIC_ROOT = __dirname;
@@ -58,6 +64,7 @@ export const ERROR_CODES = {
   TOO_MANY_QUESTIONS: 'too_many_questions',
   NO_FIXTURE: 'no_fixture',
   UPSTREAM_ERROR: 'upstream_error',
+  UNSOLVABLE: 'unsolvable',
   FORBIDDEN: 'forbidden',
   NOT_FOUND: 'not_found',
   INTERNAL: 'internal_error',
@@ -81,6 +88,14 @@ const DEFAULTS = {
   // never touch the real runs.jsonl — the same isolation lesson as the
   // recorded-fixtures race.
   runsFile: path.join(__dirname, 'runs.jsonl'),
+  // /api/geo — the real-map feed. Overpass is reached keylessly; responses are
+  // cached on disk and, when the network is down, served from committed
+  // snapshots under fixtures/geo/.
+  geoUpstream: 'https://overpass-api.de/api/interpreter',
+  geoUserAgent: 'jev-pathpuzzle/0.1 (real-map navigation demo; no API key; https://openstreetmap.org)',
+  geoTimeoutMs: 20_000,
+  geoCacheDir: path.join(__dirname, 'cache', 'geo'),
+  geoSnapshotDir: path.join(__dirname, 'fixtures', 'geo'),
 };
 
 export function readConfig(env = process.env) {
@@ -102,6 +117,11 @@ export function readConfig(env = process.env) {
     upstream: env.TYPESAFE_UPSTREAM || UPSTREAM,
     // test-only override so the run-history suite writes to a scratch file
     runsFile: env.RUNS_FILE || DEFAULTS.runsFile,
+    geoUpstream: env.GEO_UPSTREAM || DEFAULTS.geoUpstream,
+    geoUserAgent: env.GEO_UA || DEFAULTS.geoUserAgent,
+    geoTimeoutMs: Number(env.GEO_TIMEOUT_MS || DEFAULTS.geoTimeoutMs),
+    geoCacheDir: env.GEO_CACHE_DIR || DEFAULTS.geoCacheDir,
+    geoSnapshotDir: env.GEO_SNAPSHOT_DIR || DEFAULTS.geoSnapshotDir,
   };
 }
 
@@ -757,6 +777,302 @@ async function handleApiRuns(req, res, config, rateLimited) {
   return send(res, 201, record);
 }
 
+// ---- real-map feed: GET /api/geo -----------------------------------------
+// Keyless. Overpass roads -> rasterised cost grid (walls = no road). The CELL
+// COST is the real road class; applyCongestion() adds a SIMULATED multiplier
+// (documented as such in the UI). Disks cache under cache/geo/, and committed
+// snapshot fixtures under fixtures/geo/ keep the skin alive offline.
+
+const GEO_MIN_GRID = 4;
+const GEO_MAX_GRID = 64;
+const GEO_DEFAULT_GRID = 16;
+const GEO_SNAP_MAX_RADIUS = 4;
+const GEO_RETRY_EXPAND = 0.15;
+
+/** `<sha1(bboxKey)>` — the disk-cache / snapshot key the spec names. */
+export function geoCacheKey(bbox, rows, cols) {
+  return crypto.createHash('sha1').update(bboxKey(bbox, rows, cols)).digest('hex');
+}
+
+/** Parse "lat,lon"; validate ranges. Null when absent or malformed. */
+export function parseGeoPoint(value) {
+  if (value === null || value === undefined) return null;
+  const parts = String(value).split(',').map((n) => Number(n.trim()));
+  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [lat, lon] = parts;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+/** The PLACE_PAIRS entry whose bbox matches this bbox (tolerance 1e-4°). */
+export function matchGeoPair(bbox) {
+  const [s, w, n, e] = bbox;
+  for (const pair of Object.values(PLACE_PAIRS)) {
+    const [ps, pw, pn, pe] = pair.bbox;
+    if (Math.abs(s - ps) < 1e-4 && Math.abs(n - pn) < 1e-4
+      && Math.abs(w - pw) < 1e-4 && Math.abs(e - pe) < 1e-4) return pair;
+  }
+  return null;
+}
+
+/** Clean the roads array down to the compact shape the response carries. */
+function compactRoads(roads) {
+  return roads.map((r) => {
+    const out = { class: r.class, points: r.points };
+    if (r.name) out.name = r.name;
+    return out;
+  });
+}
+
+/**
+ * Rasterise roads into a response-shaped object and verify S→D is solvable.
+ * Endpoints come from `endpoints` ({from,to} geo points, optional names); when
+ * absent we pick two real, reachable road cells. Unreachable goals snap to the
+ * nearest road cell; a goal with no road within the radius opens a small patch.
+ * Returns { ok, data } on success, { ok: false, reason } when unsolvable.
+ */
+export function buildGeoResponse({ roads, bbox, rows, cols, endpoints, seed, source, fetchedAt }) {
+  const notes = [];
+  const { base, walls } = rasterize(roads, bbox, rows, cols);
+
+  const openPatch = (r, c) => {
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = r + dr, nc = c + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && walls[nr][nc]) {
+          walls[nr][nc] = 0;
+          base[nr][nc] = 8; // cheapest priced class, so the opening is drivable
+        }
+      }
+  };
+
+  const roadCells = [];
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) if (!walls[r][c]) roadCells.push({ r, c });
+
+  let from = endpoints?.from;
+  let to = endpoints?.to;
+  if (!from || !to) {
+    if (roadCells.length < 2) return { ok: false, reason: 'no roads in this bbox' };
+    if (!from) {
+      const cell = roadCells[0];
+      from = { ...cellCenter(bbox, rows, cols, cell.r, cell.c), name: 'Start' };
+    }
+    if (!to) {
+      const cell = roadCells[roadCells.length - 1];
+      to = { ...cellCenter(bbox, rows, cols, cell.r, cell.c), name: 'Destination' };
+    }
+  }
+
+  const place = (pt, role) => {
+    const cell = latLonToCell(bbox, rows, cols, pt.lat, pt.lon);
+    if (!cell) return { ok: false };
+    const snapped = snapCell(walls, cell.r, cell.c, GEO_SNAP_MAX_RADIUS);
+    if (snapped && (snapped.r !== cell.r || snapped.c !== cell.c)) {
+      notes.push(`${role} had no road exactly at the point — snapped to the nearest drivable cell`);
+      return { ok: true, cell: snapped, point: { lat: pt.lat, lon: pt.lon, name: pt.name || role } };
+    }
+    if (!snapped) {
+      notes.push(`${role} is surrounded by roads-free cells — opened a small drivable opening`);
+      openPatch(cell.r, cell.c);
+      return { ok: true, cell, point: { lat: pt.lat, lon: pt.lon, name: pt.name || role } };
+    }
+    return { ok: true, cell: snapped, point: { lat: pt.lat, lon: pt.lon, name: pt.name || role } };
+  };
+
+  const fromP = place(from, 'start');
+  if (!fromP.ok) return { ok: false, reason: 'start outside bbox' };
+  const toP = place(to, 'destination');
+  if (!toP.ok) return { ok: false, reason: 'destination outside bbox' };
+
+  const cells = applyCongestion(base, walls, seed);
+  const places = { from: { ...fromP.point, cell: fromP.cell }, to: { ...toP.point, cell: toP.cell } };
+  const board = boardFromGeo({ rows, cols, walls, cells, places });
+  const optimal = shortestCost(board);
+  if (optimal === null) return { ok: false, reason: 'no route connects the endpoints on these roads' };
+
+  return {
+    ok: true,
+    data: {
+      bbox, rows, cols,
+      roads: compactRoads(roads),
+      places,
+      cells, walls,
+      source, fetchedAt,
+      attribution: ATTRIBUTION,
+      notes,
+      optimum: optimal,
+    },
+  };
+}
+
+function geoQuery(bbox) {
+  // Overpass needs a real UA or it 406s; the query is `way["highway"](bbox)`
+  // with `out geom` so every road point carries lat/lon (no id/way joins).
+  const [s, w, n, e] = bbox;
+  return `[out:json][timeout:20];way["highway"](${s},${w},${n},${e});out geom;`;
+}
+
+async function fetchOverpass(bbox, config) {
+  const url = new URL(config.geoUpstream);
+  url.searchParams.set('data', geoQuery(bbox));
+  const r = await fetch(url.toString(), {
+    headers: { 'user-agent': config.geoUserAgent, accept: 'application/json' },
+    signal: AbortSignal.timeout(config.geoTimeoutMs),
+  });
+  if (!r.ok) throw new Error(`Overpass returned HTTP ${r.status}`);
+  const json = await r.json();
+  const roads = parseOverpass(json);
+  if (!Array.isArray(roads)) throw new Error('Overpass response was not parseable');
+  return roads;
+}
+
+async function readGeoCache(config, key) {
+  try {
+    const raw = await fs.promises.readFile(path.join(config.geoCacheDir, `${key}.json`), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function writeGeoCache(config, key, data) {
+  try {
+    await fs.promises.mkdir(config.geoCacheDir, { recursive: true });
+    await fs.promises.writeFile(path.join(config.geoCacheDir, `${key}.json`), JSON.stringify(data));
+  } catch (e) {
+    console.error(`writeGeoCache: ${e.message}`);
+  }
+}
+
+/** Fraction of the requested bbox covered by a snapshot's bbox (0..1). */
+function bboxOverlap(requested, snapBBox) {
+  const [as, aw, an, ae] = requested;
+  const [bs, bw, bn, be] = snapBBox;
+  const s = Math.max(as, bs), w = Math.max(aw, bw), n = Math.min(an, bn), e = Math.min(ae, be);
+  if (n <= s || e <= w) return 0;
+  const overlap = (n - s) * (e - w);
+  const requestedArea = (an - as) * (ae - aw);
+  return requestedArea > 0 ? overlap / requestedArea : 0;
+}
+
+async function listGeoSnapshots(config) {
+  let names;
+  try {
+    names = await fs.promises.readdir(config.geoSnapshotDir);
+  } catch {
+    return [];
+  }
+  const snaps = [];
+  for (const name of names) {
+    if (!name.endsWith('.snapshot.json')) continue;
+    try {
+      const raw = await fs.promises.readFile(path.join(config.geoSnapshotDir, name), 'utf8');
+      snaps.push({ file: name, ...JSON.parse(raw) });
+    } catch { /* skip corrupt snapshots */ }
+  }
+  return snaps;
+}
+
+/** Best snapshot for this bbox (exact preset first, then best overlap). */
+async function loadGeoSnapshot(config, bbox, rows, cols, endpoints) {
+  const snaps = await listGeoSnapshots(config);
+  if (!snaps.length) return null;
+  const scored = snaps
+    .map((s) => ({ s, overlap: bboxOverlap(bbox, s.bbox) }))
+    .sort((a, b) => b.overlap - a.overlap);
+  if (!scored.length || scored[0].overlap <= 0) return null;
+  const snap = scored[0].s;
+  const built = buildGeoResponse({
+    roads: snap.roads, bbox, rows, cols, endpoints,
+    seed: geoCacheKey(bbox, rows, cols), source: 'snapshot',
+    fetchedAt: snap.fetchedAt || new Date().toISOString(),
+  });
+  if (!built.ok) return null;
+  built.data.notes = [...(built.data.notes || []), `offline snapshot "${snap.label || snap.file}" — not live road data`];
+  return built.data;
+}
+
+async function handleApiGeo(req, res, config, rateLimited) {
+  const ip = req.socket.remoteAddress || 'x';
+  if (rateLimited(ip)) {
+    return err(res, 429, ERROR_CODES.RATE_LIMITED, 'too many requests from this address — wait a minute and retry');
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return err(res, 405, ERROR_CODES.FORBIDDEN, 'method not allowed on /api/geo');
+  }
+
+  const url = new URL(req.url, 'http://x');
+  const bbox = parseBbox(url.searchParams.get('bbox'));
+  const rawRows = Number(url.searchParams.get('rows') ?? GEO_DEFAULT_GRID);
+  const rawCols = Number(url.searchParams.get('cols') ?? GEO_DEFAULT_GRID);
+  const rows = Number.isInteger(rawRows) ? rawRows : GEO_DEFAULT_GRID;
+  const cols = Number.isInteger(rawCols) ? rawCols : GEO_DEFAULT_GRID;
+  if (!bbox) {
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, 'bbox must be "south,west,north,east" within plausible lat/lon, with south<north and west<east');
+  }
+  if (rows < GEO_MIN_GRID || rows > GEO_MAX_GRID || cols < GEO_MIN_GRID || cols > GEO_MAX_GRID) {
+    return err(res, 400, ERROR_CODES.BAD_REQUEST, `rows/cols must be integers between ${GEO_MIN_GRID} and ${GEO_MAX_GRID}`);
+  }
+  const refresh = ['1', 'true', 'yes', 'on'].includes(String(url.searchParams.get('refresh')).toLowerCase());
+
+  const explicitFrom = parseGeoPoint(url.searchParams.get('from'));
+  const explicitTo = parseGeoPoint(url.searchParams.get('to'));
+  const pair = matchGeoPair(bbox);
+  const endpoints = (explicitFrom && explicitTo)
+    ? { from: explicitFrom, to: explicitTo }
+    : pair
+      ? { from: { lat: pair.from.lat, lon: pair.from.lon, name: pair.from.name }, to: { lat: pair.to.lat, lon: pair.to.lon, name: pair.to.name } }
+      : null;
+
+  const key = geoCacheKey(bbox, rows, cols);
+  if (!refresh) {
+    const cached = await readGeoCache(config, key);
+    if (cached && Array.isArray(cached.cells) && cached.places?.from?.cell) {
+      return send(res, 200, { ...cached, source: 'cache' });
+    }
+  }
+
+  const fetchedAt = new Date().toISOString();
+  let liveData = null;
+  let attemptBbox = bbox;
+  let unsolvableReason = null;
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const roads = await fetchOverpass(attemptBbox, config);
+      const built = buildGeoResponse({
+        roads, bbox: attemptBbox, rows, cols, endpoints,
+        seed: key, source: 'overpass', fetchedAt,
+      });
+      if (built.ok) {
+        if (attempt > 0) built.data.notes.push('bbox expanded ~15% because the endpoint pair was unreachable on the first window');
+        liveData = built.data;
+        break;
+      }
+      unsolvableReason = built.reason;
+      attemptBbox = expandBbox(bbox, GEO_RETRY_EXPAND);
+    }
+  } catch (e) {
+    // Overpass down / timed out / malformed -> fall back to a committed snapshot.
+    const snap = await loadGeoSnapshot(config, bbox, rows, cols, endpoints);
+    if (snap) {
+      return send(res, 200, snap);
+    }
+    const sanitized = String(e?.message || e).slice(0, 200);
+    return err(res, 502, ERROR_CODES.UPSTREAM_ERROR,
+      `could not fetch road data (${sanitized}) and no offline snapshot covers this area`);
+  }
+
+  if (!liveData) {
+    // Network fine but the roads genuinely never connect the two endpoints.
+    return err(res, 502, ERROR_CODES.UNSOLVABLE,
+      `this area has no route between the chosen places on priced roads${unsolvableReason ? ` — ${unsolvableReason}` : ''}`);
+  }
+
+  writeGeoCache(config, key, liveData);
+  return send(res, 200, liveData);
+}
+
 // ---- request handling ----------------------------------------------------
 function isValidPayload(payload) {
   return payload && typeof payload === 'object'
@@ -941,6 +1257,10 @@ export function createServer(config = readConfig()) {
     }
     if (url.pathname === '/api/runs') {
       return handleApiRuns(req, res, cfg, rateLimited).catch(() =>
+        err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
+    }
+    if (url.pathname === '/api/geo') {
+      return handleApiGeo(req, res, cfg, rateLimited).catch(() =>
         err(res, 500, ERROR_CODES.INTERNAL, 'internal error'));
     }
     if (url.pathname === '/api/health') {

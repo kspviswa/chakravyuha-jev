@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "fixtures": "node scripts/record-fixtures.mjs"
+    "fixtures": "node scripts/record-fixtures.mjs",
+    "geo-fixtures": "node scripts/record-geo-snapshots.mjs"
   },
   "engines": {
     "node": ">=20"
