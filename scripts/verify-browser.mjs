@@ -122,7 +122,9 @@ async function runViewport(cdp, base, vp, route) {
   if (grid.err) throw new Error(`ask failed (grid skin): ${await cdp.send('Runtime.evaluate', { expression: `document.getElementById('error-msg').textContent`, returnByValue: true }).then(x => x.result?.value)}`);
   console.log('  grid stub round-trip: ok; badge =', (await cdp.send('Runtime.evaluate', { expression: `document.getElementById('mode').textContent`, returnByValue: true })).result?.value);
 
-  // skin 2: navigation with the car
+  // skin 2: navigation with the car. This skin is now ASYNC — it fetches real
+  // road data from /api/geo and only then mounts its canvas — so wait for the
+  // mount instead of sampling 50ms after the click.
   await new Promise((r) => setTimeout(r, 600));
   const clickInfo = await cdp.send('Runtime.evaluate', {
     expression: `(async () => {
@@ -133,18 +135,36 @@ await new Promise((r) => setTimeout(r, 50));
         beforeAskDisabled: askDisabled,
         active: [...document.querySelectorAll('.skin-btn')].find((b) => b.classList.contains('active'))?.dataset.skin || null,
         jevSkin: localStorage.getItem('jev.skin'),
-        mapSize: !!document.getElementById('map-size'),
       };
     })()`,
     awaitPromise: true,
     returnByValue: true,
   });
   console.log('  gmaps click:', JSON.stringify(clickInfo.result?.value));
-  if (!clickInfo.result?.value?.mapSize) {
+  try {
+    // The real-map skin mounts a route-preset select (#geo-pair); the stylised
+    // sim skin mounts #map-size. Wait for the nav skin's own marker.
+    await evalCond(cdp, `!!document.querySelector('#geo-pair')`, 20000);
+  } catch {
     console.error('  page exceptions:', JSON.stringify(cdp.exceptions.map((e) => e.params.exceptionDetails?.exception?.description)));
     throw new Error('gmaps skin did not mount');
   }
-  await evalCond(cdp, `document.getElementById('skin-controls').innerText.includes('New city')`);
+  // The navigation skin shows REAL geography: a route preset with real place
+  // names, and the mandatory OSM attribution. Both must be on the page.
+  await evalCond(cdp, `document.getElementById('skin-controls').innerText.includes('Route preset')`, 10000);
+  const geo = await cdp.send('Runtime.evaluate', {
+    expression: `(() => ({
+      attribution: document.body.innerText.includes('OpenStreetMap'),
+      preset: /ByWard Market|Tunney|Kanata/.test(document.getElementById('skin-controls').innerText),
+      canvas: (() => { const c = document.getElementById('board'); return c ? c.width > 0 && c.height > 0 : false; })(),
+    }))()`,
+    returnByValue: true,
+  });
+  const g = geo.result?.value || {};
+  if (!g.attribution) throw new Error('gmaps skin is missing the OpenStreetMap attribution');
+  if (!g.preset) throw new Error('gmaps skin is missing the real-place route presets');
+  if (!g.canvas) throw new Error('gmaps skin canvas has no size');
+  console.log('  gmaps real map: attribution + real presets + canvas: ok');
   await cdp.send('Runtime.evaluate', { expression: `document.getElementById('ask').click()` });
   const nav = await evalCond(cdp, `(() => {
     const r = document.getElementById('referee');

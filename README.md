@@ -5,11 +5,19 @@ heuristic in the game loop — you can prove it: the invariant test scans the so
 The board is serialised, sent to Jev in **one request**, and the direction list Jev
 returns is applied verbatim. The app then *checks* the answer with a referee.
 
-Two skins run on the same loop:
+Three skins run on the same loop:
 
 - **Grid** — a maze of `.`/`#`; every step is "which move is *k* of the shortest path?".
-- **Map** — a city street grid with a congestion-weight on every road; Jev routes a car
-  from pickup S to drop-off D by least *cost*, and the app animates the drive turn by turn.
+- **Map** — a **real** OpenStreetMap map. Jev routes a car between two real Ottawa
+  places (ByWard Market → Parliament Hill, and others) over **real roads** fetched from
+  the Overpass API: a cell with no road in it is a wall, and each cell's cost comes from
+  the real road class (motorway ≈ 1 … service ≈ 8). The map imagery is OSM raster tiles
+  and the attribution is shown on the page. The **congestion multiplier is simulated** —
+  the cost is real, the traffic is not, and the UI says so. Works offline: recorded
+  snapshots under `fixtures/geo/` are served (and labelled `snapshot`) when Overpass is
+  unreachable.
+- **Sim city** — the original stylised city with invented congestion, kept for comparison
+  and for a fully offline demo.
 
 ```
    difficulty / city + 🎲 New
@@ -97,6 +105,20 @@ own response.
   and per-IP rate limit as `/api/jev`.
 - If the server is down the history page degrades to a localStorage cache of
   the last successful fetch and says so instead of going blank.
+
+## The real map (`GET /api/geo`)
+
+The Map skin is backed by real geography, keyless:
+
+- `GET /api/geo?bbox=s,w,n,e&rows=16&cols=16` fetches real roads from the **Overpass API**
+  (a real `User-Agent` is required — Overpass returns 406 without one), rasterises them to
+  a cost grid, and returns the grid, the walls, the road polylines, and the snapped
+  from/to. `?from=lat,lon&to=lat,lon` overrides the endpoints; `?refresh=1` skips the cache.
+- Results are cached on disk under the git-ignored `cache/geo/`. If Overpass is
+  unreachable the server serves a committed snapshot from `fixtures/geo/` and labels it
+  `"source": "snapshot"` — the UI shows that word, so a snapshot run is never mistaken for
+  a live one.
+- `"source"` is one of `overpass` | `cache` | `snapshot`. **No API key is involved.**
 
 ## The three answer sources
 
@@ -212,8 +234,9 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 ## Files
 
 - `server.mjs` — static allowlist server + `/api/jev` BYOK shim (proxy relay + offline
-  stub solver + replay + rate limit + meters + structured errors). The solver lives only
-  in `stubAnswer()`, never called when any key is present.
+  stub solver + replay + rate limit + meters + structured errors), the `/api/runs` run
+  history, and the keyless `/api/geo` Overpass proxy with its disk cache and snapshot
+  fallback. The solver lives only in `stubAnswer()`, never called when any key is present.
 - `app.js` — the shell: base-path derivation, skin switch, keycard/transport, mode badge,
   one `ask()` round trip, answer/meter/referee rendering, Export run, and fire-and-forget
   run recording (`POST /api/runs`). No pathfinding.
@@ -226,8 +249,13 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 - `lib/board.js` — grid + city board generation.
 - `lib/jev.js` — state/question/answer builders for both skins.
 - `lib/transport.js` — BYOK key store (`jev.key`), proxy/direct transport, base-path.
-- `skins/grid.js`, `skins/gmaps.js` — the two skins; both only *draw* returned moves.
+- `lib/geo.js` — pure geography: the road-class cost table, real Ottawa place pairs, bbox
+  maths, Overpass parsing, road → cost-grid rasterisation (no road = wall), endpoint
+  snapping, and the simulated congestion layer. No network, no DOM, no pathfinding.
+- `skins/grid.js`, `skins/gmaps.js` (real OSM map), `skins/sim.js` (stylised city) — the
+  three skins; all only *draw* returned moves.
 - `fixtures/` — committed REPLAY recordings + git-ignored `recorded/*.live.json`.
+- `fixtures/geo/` — committed Overpass snapshots so the map skin works offline.
 - `scripts/record-fixtures.mjs` — deterministic regeneration of the committed fixtures.
 - `test/` — the `node --test` suite.
 - `docs/API.md` — the exact wire shape used here.
@@ -235,6 +263,13 @@ journalctl -u abhimanyu -n 20 --no-pager | grep jev-debug
 - `runs.jsonl` — the git-ignored, append-only run history (capped at 500).
 
 ## Honest caveat
+
+**The map skin's congestion is simulated.** The *cost* of each cell is real — it comes from
+the actual road class OpenStreetMap records for that cell (motorway is cheap, service roads
+are expensive), and a cell with no road in it is genuinely impassable. But the *congestion
+multiplier* layered on top is invented: there is no live traffic feed behind this. The UI
+says so, and so does the run record. Real roads, real places, real least-cost routing —
+simulated traffic.
 
 "Which move is move *k* of the shortest path?" (or "…least-cost route?") is a *global*
 reasoning question, and the TypeSafe docs steer away from those toward one-second snap

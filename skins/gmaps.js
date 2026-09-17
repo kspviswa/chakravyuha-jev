@@ -1,15 +1,34 @@
-// skins/gmaps.js — the navigation ("gmaps") skin with a car (canvas).
+// skins/gmaps.js — the Navigation skin: a REAL map. Real geography only.
 //
-// No Google Maps SDK, no tiles, no network: the city is drawn locally on a
-// canvas. Everything is driven by the SAME Jev round trip as the grid skin —
-// the state is the weighted city map, the objective is least-cost, and this
-// skin only *draws* the route the referee verified. Road weights (congestion
-// 1–5) turn the question from "fewest moves" into "least cost".
+// The map background is OSM raster tiles drawn by hand onto the existing
+// <canvas> (no runtime CDN — the tiles themselves are image DATA from
+// tile.openstreetmap.org, fetched eagerly at runtime, and the app stays
+// playable when they fail). The road network comes from /api/geo, which
+// rasterises real OpenStreetMap roads: a cell with NO road is a wall, and the
+// cost of a road cell comes from the REAL road class (motorway cheap, service
+// roads expensive). The congestion MULTIPLIER on top is SIMULATED — we have no
+// live traffic feed, and the UI says so.
+//
+// Game-loop rule unchanged: this skin serialises the geo board, sends it to
+// Jev, and draws the returned moves (lib/referee.js checks, never chooses).
 
-import { makeCityBoard, MAP_SIZES } from '../lib/board.js';
-import { buildNavState, buildNavQuestions, answerMoves } from '../lib/jev.js';
-import { verdictWeighted, walkPath } from '../lib/referee.js';
+import { PLACE_PAIRS, ATTRIBUTION, boardFromGeo, cellCenter } from '../lib/geo.js';
+import { buildNavQuestions, answerMoves } from '../lib/jev.js';
+import { verdictWeighted } from '../lib/referee.js';
+import { deriveBase } from '../lib/transport.js';
 
+const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
+const TILE_URL = 'https://tile.openstreetmap.org';
+const GRID_SIZES = [
+  { v: 16, label: '16 × 16' },
+  { v: 24, label: '24 × 24' },
+  { v: 32, label: '32 × 32' },
+];
+const SOURCE_LABEL = {
+  overpass: 'LIVE — real OSM/Overpass road data',
+  cache: 'CACHED road data (this area was fetched before)',
+  snapshot: 'SNAPSHOT — offline fallback, NOT live road data',
+};
 const DIR_ANGLE = { up: -Math.PI / 2, down: Math.PI / 2, left: Math.PI, right: 0 };
 const DIR_NAME = { up: 'north', down: 'south', left: 'west', right: 'east' };
 
@@ -42,34 +61,31 @@ export function turnInstructions(cells) {
   return lines;
 }
 
-function drawCar(ctx, x, y, angle, u) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.lineCap = 'round';
-  // wheels
-  ctx.fillStyle = '#0b0c10';
-  for (const s of [-1, 1]) {
-    ctx.fillRect(-0.5 * u + 0.04 * u, s * 0.34 * u - 0.09 * u, 0.66 * u, 0.18 * u);
-    ctx.fillRect(0.34 * u, s * 0.34 * u - 0.09 * u, 0.66 * u, 0.18 * u);
+// ---- slippy-map maths (pure, tiny) -----------------------------------------
+const TILE = 256;
+
+/** Web-Mercator tile coords (floats) for a lat/lon at zoom z. */
+export function projectTile(lat, lon, z) {
+  const n = 1 << z;
+  const x = ((lon + 180) / 360) * n;
+  const latRad = (lat * Math.PI) / 180;
+  const y = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+  return { x, y };
+}
+
+/** Fit zoom: bbox pixel span closest to the canvas dimension. */
+export function chooseZoom([s, w, n, e], canvasSize) {
+  let best = 1; let bestGap = Infinity;
+  for (let z = 1; z <= 18; z++) {
+    const x0 = projectTile(0, w, z).x;
+    const x1 = projectTile(0, e, z).x;
+    const y0 = projectTile(n, 0, z).y;
+    const y1 = projectTile(s, 0, z).y;
+    const span = Math.max((x1 - x0), (y1 - y0)) * TILE;
+    const gap = Math.abs(span - canvasSize);
+    if (gap < bestGap) { bestGap = gap; best = z; }
   }
-  // body
-  const grad = ctx.createLinearGradient(-u, 0, u, 0);
-  grad.addColorStop(0, '#f87171');
-  grad.addColorStop(1, '#ef4444');
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.roundRect(-0.5 * u, -0.24 * u, 1.9 * u, 0.48 * u, 0.16 * u);
-  ctx.fill();
-  // windshield + roof
-  ctx.fillStyle = '#0ea5e9';
-  ctx.fillRect(0.62 * u, -0.2 * u, 0.3 * u, 0.4 * u);
-  ctx.fillStyle = '#7f1d1d';
-  ctx.fillRect(0.05 * u, -0.2 * u, 0.35 * u, 0.4 * u);
-  // headlights
-  ctx.fillStyle = '#fef08a';
-  ctx.fillRect(1.26 * u, -0.17 * u, 0.08 * u, 0.34 * u);
-  ctx.restore();
+  return best;
 }
 
 export const gmapsSkin = {
@@ -77,65 +93,199 @@ export const gmapsSkin = {
   label: 'Navigation',
   weighted: true,
 
-  mount({ container, autoAsk, resultEl }) {
+  async mount({ container, autoAsk, resultEl }) {
     this.autoAsk = autoAsk;
     this.resultEl = resultEl;
-    const wrap = document.createElement('div');
-    wrap.className = 'skin-controls';
-    wrap.innerHTML = `
-      <label>Map size
-        <select id="map-size">
-          ${Object.entries(MAP_SIZES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}
-        </select>
-      </label>
-      <button id="map-new" class="ghost" type="button">🏙️ New city</button>
-      <label class="check"><input type="checkbox" id="map-traffic" /> traffic jams — randomise congestion &amp; re-ask</label>
-      <label class="check"><input type="checkbox" id="map-animate" checked /> animate the car</label>
-      <div class="map-hint">Each open cell costs 1–5 (its congestion weight): the question is <b>least cost</b>, not fewest moves.</div>`;
-    container.appendChild(wrap);
-
-    const sel = wrap.querySelector('#map-size');
-    sel.value = 'medium';
-    this.board = makeCityBoard('medium');
+    this.geo = null;
+    this.board = null;
     this.route = [];
     this.cost = 0;
     this.animating = false;
-    this.progress = 0; // 0..1 over the whole route
+    this.progress = 0;
+    this.tiles = Object.create(null);   // "z/x/y" -> <img>
+    this.view = { zoom: 1, panX: 0, panY: 0 };
+    this.dead = false;
 
-    wrap.querySelector('#map-new').addEventListener('click', () => {
-      this.board = makeCityBoard(sel.value);
-      this.route = [];
-      this.draw();
-      if (this.autoAsk) this.autoAsk();
+    const wrap = document.createElement('div');
+    wrap.className = 'skin-controls';
+    wrap.innerHTML = `
+      <label>Route preset <em>(real places in Ottawa)</em>
+        <select id="geo-pair">
+          ${Object.entries(PLACE_PAIRS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}
+        </select>
+      </label>
+      <label>Grid
+        <select id="geo-grid">
+          ${GRID_SIZES.map((g) => `<option value="${g.v}">${g.label}</option>`).join('')}
+        </select>
+      </label>
+      <label>Manual endpoints <em>(lat,lon)</em>
+        <input id="geo-from" placeholder="from — e.g. ${PLACE_PAIRS['byward-parliament'].from.lat},${PLACE_PAIRS['byward-parliament'].from.lon}" />
+        <input id="geo-to" placeholder="to — e.g. ${PLACE_PAIRS['byward-parliament'].to.lat},${PLACE_PAIRS['byward-parliament'].to.lon}" />
+      </label>
+      <div class="geo-actions">
+        <button id="geo-load" class="ghost" type="button">🗺️ Load this map</button>
+        <button id="geo-refresh" class="ghost" type="button">↻ Refresh (skip cache)</button>
+      </div>
+      <div class="map-hint">Each cell: <b>real road class cost</b> (motorway ≈ 1…service ≈ 8). Intersections on the grid are drivable gaps; tiles are OSM raster. <b>The congestion multiplier is SIMULATED</b> — cost is real, traffic is not.</div>
+      <label class="check"><input type="checkbox" id="geo-animate" checked /> animate the car</label>`;
+    container.appendChild(wrap);
+
+    this.statusEl = document.createElement('div');
+    this.statusEl.className = 'geo-status';
+    wrap.appendChild(this.statusEl);
+
+    const pairSel = wrap.querySelector('#geo-pair');
+    const gridSel = wrap.querySelector('#geo-grid');
+    const fromEl = wrap.querySelector('#geo-from');
+    const toEl = wrap.querySelector('#geo-to');
+    pairSel.value = 'byward-parliament';
+
+    const clearManual = () => { fromEl.value = ''; toEl.value = ''; };
+    pairSel.addEventListener('change', () => { clearManual(); this.loadFromFields(); });
+    gridSel.addEventListener('change', () => this.loadFromFields());
+    wrap.querySelector('#geo-load').addEventListener('click', () => this.loadFromFields());
+    wrap.querySelector('#geo-refresh').addEventListener('click', () => { this.refreshing = true; this.loadFromFields(); });
+
+    this.bindCanvas();
+
+    await this.loadFromFields();
+  },
+
+  bindCanvas() {
+    const canvas = document.getElementById('board');
+    if (!canvas || canvas.dataset.geoBound) return;
+    canvas.dataset.geoBound = '1';
+    const skin = this;
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      skin.view.zoom = Math.min(8, Math.max(0.4, skin.view.zoom * factor));
+      skin.draw();
+    }, { passive: false });
+    let down = null;
+    canvas.addEventListener('pointerdown', (e) => {
+      down = { x: e.clientX, y: e.clientY, panX: skin.view.panX, panY: skin.view.panY };
     });
-    sel.addEventListener('change', () => {
-      this.board = makeCityBoard(sel.value);
-      this.route = [];
-      this.draw();
-      if (this.autoAsk) this.autoAsk();
+    canvas.addEventListener('pointermove', (e) => {
+      if (!down) return;
+      skin.view.panX = down.panX + (e.clientX - down.x);
+      skin.view.panY = down.panY + (e.clientY - down.y);
+      skin.draw();
     });
-    wrap.querySelector('#map-traffic').addEventListener('change', (e) => {
-      this.randomizeTraffic();
-      if (e.target.checked && this.autoAsk) this.autoAsk();
+    const up = () => { down = null; };
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointerleave', up);
+    canvas.addEventListener('dblclick', () => {
+      skin.view.zoom = 1; skin.view.panX = 0; skin.view.panY = 0;
+      skin.draw();
     });
   },
 
-  randomizeTraffic() {
-    const { rows, weights } = this.board;
-    const rand = () => 1 + Math.floor(Math.random() * 5);
-    for (let r = 0; r < this.board.R; r++)
-      for (let c = 0; c < this.board.C; c++)
-        if (['.'].includes(rows[r][c])) weights[r][c] = rand();
+  setStatus(text, kind = '') {
+    if (this.statusEl) {
+      this.statusEl.textContent = text;
+      this.statusEl.className = 'geo-status' + (kind ? ` ${kind}` : '');
+    }
+  },
+
+  manualFromFields() {
+    const fromEl = document.querySelector('#geo-from');
+    const toEl = document.querySelector('#geo-to');
+    const parse = (el) => {
+      const v = (el?.value || '').trim();
+      if (!v) return null;
+      const parts = v.split(',').map((n) => Number(n.trim()));
+      if (parts.length !== 2 || !parts.every(Number.isFinite)) return { error: true };
+      const [lat, lon] = parts;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return { error: true };
+      return { lat, lon };
+    };
+    const f = parse(fromEl);
+    const t = parse(toEl);
+    if ((fromEl?.value.trim() || toEl?.value.trim()) && (f?.error || t?.error)) {
+      this.setStatus('manual endpoints must be “lat,lon” with lat in −90..90 and lon in −180..180', 'err');
+      return { error: true };
+    }
+    if (!f && !t) return {};
+    if ((fromEl?.value.trim() && !f) || (toEl?.value.trim() && !t)) return { error: true };
+    return (f && t) ? { from: f, to: t, manual: true } : { error: true };
+  },
+
+  async loadFromFields() {
+    const pairEl = document.querySelector('#geo-pair');
+    const gridEl = document.querySelector('#geo-grid');
+    const pair = PLACE_PAIRS[pairEl?.value] || PLACE_PAIRS['byward-parliament'];
+    const rows = Number(gridEl?.value || 16);
+    const cols = rows;
+    const manual = this.manualFromFields();
+    if (manual.error) return;
+
+    this.setStatus('loading road network…');
+    const params = new URLSearchParams();
+    params.set('bbox', pair.bbox.join(','));
+    params.set('rows', String(rows));
+    params.set('cols', String(cols));
+    if (manual.from && manual.to) {
+      params.set('from', `${manual.from.lat},${manual.from.lon}`);
+      params.set('to', `${manual.to.lat},${manual.to.lon}`);
+    }
+    if (this.refreshing) { params.set('refresh', '1'); this.refreshing = false; }
+    try {
+      const r = await fetch(`${BASE}api/geo?${params.toString()}`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(body?.error?.message || `map API HTTP ${r.status}`);
+      }
+      const geo = await r.json();
+      this.applyGeo(geo);
+      this.setStatus(SOURCE_LABEL[geo.source] || `source: ${geo.source}`,
+        geo.source === 'snapshot' ? 'snap' : 'ok');
+    } catch (e) {
+      this.geo = null;
+      this.dead = true;
+      this.setStatus(`real map unavailable — ${e.message}. Showing the simulated city instead so the round-trip still works.`, 'err');
+      const { makeCityBoard } = await import('../lib/board.js');
+      this.board = makeCityBoard('medium');
+      this.draw();
+    }
+  },
+
+  applyGeo(geo) {
+    this.geo = geo;
+    this.tiles = Object.create(null);
+    this.view = { zoom: 1, panX: 0, panY: 0 };
+    this.board = boardFromGeo(geo);
+    this.notes = geo.notes || [];
     this.route = [];
+    this.dead = false;
     this.draw();
+    if (this.autoAsk) this.autoAsk();
   },
 
   begin() {
     this.route = [];
     this.cost = 0;
     this.progress = 0;
-    this.draw();
-    return { state: buildNavState(this.board), questions: buildNavQuestions(this.board) };
+    if (this.board) this.draw();
+    const board = this.board;
+    const weights = board.weights;
+    return {
+      state: {
+        task: 'navigation_weighted',
+        grid: board.rows.map((row) => row.join('')),
+        weights: weights.map((row) => row.map(Number)),
+        legend: {
+          S: 'pickup', D: 'drop-off (flag)', '#': 'no road (impassable)',
+          weights: 'cost of each open cell, from the REAL OSM road class (motorway ≈ 1 … service ≈ 8) times a SIMULATED congestion multiplier',
+        },
+        source: { row: board.src.r, col: board.src.c },
+        destination: { row: board.dst.r, col: board.dst.c },
+        rules: '4-directional moves. Entering a cell costs its weight; the start cell costs nothing. Road class is real OpenStreetMap data; the congestion multiplier is simulated.',
+        objective: 'Find the least-cost route from the pickup S to the drop-off D, expressed as an ordered list of single-cell moves.',
+      },
+      questions: buildNavQuestions(board),
+    };
   },
 
   check(moves) {
@@ -146,31 +296,61 @@ export const gmapsSkin = {
     return `
       <span class="k"><i class="sw s"></i>pickup</span>
       <span class="k"><i class="sw d"></i>drop-off</span>
-      <span class="k"><i class="sw b"></i>block</span>
-      <span class="k"><i class="sw pk"></i>park</span>
-      <span class="k"><i class="sw p"></i>Jev's route</span>`;
+      <span class="k"><i class="sw w"></i>no road</span>
+      <span class="k"><i class="sw p"></i>Jev's route</span>
+      <span class="attrib">${ATTRIBUTION}</span>`;
   },
 
-  geometry() {
+  // ---- view transform -------------------------------------------------------
+  viewTransform() {
     const canvas = document.getElementById('board');
-    const { R, C } = this.board;
-    const cell = Math.floor(Math.min(canvas.width / C, canvas.height / R));
-    return { canvas, cell, ox: Math.floor((canvas.width - cell * C) / 2), oy: Math.floor((canvas.height - cell * R) / 2) };
+    const W = canvas.width, H = canvas.height;
+    const [s, w, n, e] = this.geo.bbox;
+    const z = chooseZoom(this.geo.bbox, Math.min(W, H));
+    const xw = projectTile(0, w, z).x;
+    const xe = projectTile(0, e, z).x;
+    const yn = projectTile(n, 0, z).y;
+    const ys = projectTile(s, 0, z).y;
+    const spanX = (xe - xw) * TILE;
+    const spanY = (ys - yn) * TILE;
+    const fitScale = Math.min(W / spanX, H / spanY);
+    const baseX = (W - spanX * fitScale) / 2 + this.view.panX;
+    const baseY = (H - spanY * fitScale) / 2 + this.view.panY;
+    const scale = fitScale * this.view.zoom;
+    const sx = (lon) => (projectTile(0, lon, z).x - xw) * TILE * scale + baseX;
+    const sy = (lat) => (projectTile(lat, 0, z).y - yn) * TILE * scale + baseY;
+    return {
+      z, xw, yn, sx, sy, baseX, baseY,
+      tileSize: TILE * scale, W, H,
+    };
   },
 
+  // ---- drawing ----------------------------------------------------------------
   draw(progress) {
-    const board = this.board;
-    const { canvas, cell, ox, oy } = this.geometry();
+    const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d');
-    const cx = (c) => ox + c * cell + cell / 2;
-    const cy = (r) => oy + r * cell + cell / 2;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // land
     ctx.fillStyle = '#0e1118';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (!this.geo || !this.board) {
+      this.drawFallbackCity(ctx, canvas);
+      return;
+    }
 
-    // cells: roads with congestion tint, blocks, park
+    const T = this.viewTransform();
+    this.drawTiles(ctx, T);
+    this.drawCells(ctx, T);
+    this.drawRoute(ctx, T, progress);
+    this.drawPins(ctx, T);
+    this.drawBadges(ctx, T);
+  },
+
+  drawFallbackCity(ctx, canvas) {
+    if (!this.board) return;
+    const board = this.board;
+    const cell = Math.floor(Math.min(canvas.width / board.C, canvas.height / board.R));
+    const ox = Math.floor((canvas.width - cell * board.C) / 2);
+    const oy = Math.floor((canvas.height - cell * board.R) / 2);
     for (let r = 0; r < board.R; r++) {
       for (let c = 0; c < board.C; c++) {
         const ch = board.rows[r][c];
@@ -178,113 +358,164 @@ export const gmapsSkin = {
         if (ch === '#') {
           ctx.fillStyle = '#333c4a';
           ctx.fillRect(x, y, cell, cell);
-          ctx.fillStyle = '#262e3a';
-          ctx.fillRect(x + cell * 0.08, y + cell * 0.08, cell * 0.84, cell * 0.84);
-          ctx.fillStyle = 'rgba(0,0,0,0.25)';
-          ctx.fillRect(x + cell * 0.08, y + cell * 0.62, cell * 0.84, cell * 0.3);
-        } else if (ch === 'P') {
-          ctx.fillStyle = '#1d3a26';
-          ctx.fillRect(x, y, cell, cell);
-          ctx.fillStyle = '#2d5a3a';
-          ctx.beginPath();
-          ctx.arc(x + cell / 2, y + cell / 2, cell * 0.22, 0, 7);
-          ctx.fill();
-          ctx.fillStyle = '#17301f';
-          ctx.fillRect(x + cell / 2 - 1, y + cell / 2 + cell * 0.06, 2, cell * 0.22);
         } else {
           const w = board.weights[r][c] || 1;
-          const t = (w - 1) / 4;
-          ctx.fillStyle = `rgb(${Math.round(30 + t * 30)}, ${Math.round(36 - t * 8)}, ${Math.round(45 - t * 10)})`;
-          ctx.fillRect(x, y, cell, cell);
-          ctx.fillStyle = 'rgba(255,255,255,0.05)';
-          ctx.fillRect(x, y, cell, 1);
-          ctx.fillStyle = 'rgba(0,0,0,0.28)';
-          ctx.fillRect(x, y + cell - 1, cell, 1);
-          // congestion number
-          ctx.fillStyle = t > 0.5 ? '#fda4af' : 'rgba(200,210,225,0.5)';
-          ctx.font = `600 ${Math.max(10, Math.round(cell * 0.34))}px ui-monospace,monospace`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          if (!(ch === 'S' || ch === 'D')) ctx.fillText(String(w), cx(c), cy(r));
+          const t = Math.min(1, w / 10);
+          ctx.fillStyle = `rgb(${Math.round(40 - t * 10)}, ${Math.round(60 - t * 30)}, ${Math.round(90 - t * 30)})`;
+          ctx.fillRect(x + 1, y + 1, cell - 2, cell - 2);
         }
       }
     }
-
-    // route (casing + bright core), drawn up to `progress`
-    const pts = this.route;
-    if (pts.length > 1 && progress > 0) {
-      const n = Math.max(1, Math.round((pts.length - 1) * Math.min(1, progress)));
-      const drawn = pts.slice(0, n + 1);
-      const line = (color, width) => {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-        ctx.beginPath();
-        drawn.forEach((p, i) => (i ? ctx.lineTo(cx(p.c), cy(p.r)) : ctx.moveTo(cx(p.c), cy(p.r))));
-        ctx.stroke();
-      };
-      line('#0b0c10', Math.max(4, cell * 0.34));      // casing
-      line('#38bdf8', Math.max(2.5, cell * 0.22));    // bright core
-    }
-
-    this.drawPins(ctx, cx, cy, cell);
-    this.drawCarAt(ctx, cx, cy, cell, progress);
+    ctx.fillStyle = '#fca5a5';
+    ctx.font = '600 26px ui-monospace,monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('map unavailable — simulated city', canvas.width / 2, canvas.height / 2);
   },
 
-  drawPins(ctx, cx, cy, cell) {
-    const drawPin = (x, y, color) => {
+  drawTiles(ctx, T) {
+    const x0 = Math.floor(T.xw - T.baseX / T.tileSize);
+    const x1 = Math.floor(T.xw + (T.W - T.baseX) / T.tileSize);
+    const y0 = Math.floor(T.yn - T.baseY / T.tileSize);
+    const y1 = Math.floor(T.yn + (T.H - T.baseY) / T.tileSize);
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        const key = `${T.z}/${tx}/${ty}`;
+        const img = this.tileImage(key, T.z, tx, ty);
+        if (img && img.complete && img.naturalWidth > 0) {
+          const dx = (tx - T.xw) * T.tileSize + T.baseX;
+          const dy = (ty - T.yn) * T.tileSize + T.baseY;
+          ctx.drawImage(img, dx, dy, T.tileSize, T.tileSize);
+        }
+      }
+    }
+  },
+
+  tileImage(key, z, x, y) {
+    let img = this.tiles[key];
+    if (img) return img;
+    img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { if (!this.disposed) this.draw(); };
+    img.onerror = () => { this.tiles[key] = null; if (!this.disposed) this.draw(); };
+    img.src = `${TILE_URL}/${z}/${x}/${y}.png`;
+    this.tiles[key] = img;
+    return img;
+  },
+
+  drawCells(ctx, T) {
+    const [s, w, n, e] = this.geo.bbox;
+    const R = this.geo.rows, C = this.geo.cols;
+    const dLat = (n - s) / R, dLon = (e - w) / C;
+    for (let r = 0; r < R; r++) {
+      for (let c = 0; c < C; c++) {
+        const lat0 = n - r * dLat, lat1 = n - (r + 1) * dLat;
+        const lon0 = w + c * dLon, lon1 = w + (c + 1) * dLon;
+        const wall = this.geo.walls[r][c];
+        const cost = this.geo.cells[r][c];
+        const x = [T.sx(lon0), T.sx(lon1)];
+        const y = [T.sy(lat0), T.sy(lat1)];
+        ctx.beginPath();
+        ctx.moveTo(x[0], y[0]); ctx.lineTo(x[1], y[0]);
+        ctx.lineTo(x[1], y[1]); ctx.lineTo(x[0], y[1]);
+        ctx.closePath();
+        if (wall) {
+          ctx.fillStyle = 'rgba(12,14,20,0.82)';
+          ctx.fill();
+        } else {
+          const t = Math.min(1, (cost || 1) / 10);
+          const g = Math.round(150 + 40 * (1 - t));
+          const b = Math.round(180 + 20 * (1 - t));
+          ctx.fillStyle = `rgba(56,${g},${b},${(0.20 + t * 0.22).toFixed(3)})`;
+          ctx.fill();
+        }
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  },
+
+  drawRoute(ctx, T, progress) {
+    const pts = this.route;
+    if (pts.length < 2 || !progress || progress <= 0) return;
+    const n = Math.max(1, Math.round((pts.length - 1) * Math.min(1, progress)));
+    const drawn = pts.slice(0, n + 1);
+    const xy = (p) => {
+      const cc = cellCenter(this.geo.bbox, this.geo.rows, this.geo.cols, p.r, p.c);
+      return [T.sx(cc.lon), T.sy(cc.lat)];
+    };
+    const line = (color, width) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.beginPath();
+      drawn.forEach((p, i) => {
+        const [X, Y] = xy(p);
+        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
+      });
+      ctx.stroke();
+    };
+    line('rgba(0,0,0,0.75)', Math.max(4, T.tileSize * 0.32));
+    line('#38bdf8', Math.max(2.5, T.tileSize * 0.18));
+  },
+
+  drawPins(ctx, T) {
+    const src = cellCenter(this.geo.bbox, this.geo.rows, this.geo.cols, this.board.src.r, this.board.src.c);
+    const dst = cellCenter(this.geo.bbox, this.geo.rows, this.geo.cols, this.board.dst.r, this.board.dst.c);
+    const sx0 = T.sx(src.lon), sy0 = T.sy(src.lat);
+    const sx1 = T.sx(dst.lon), sy1 = T.sy(dst.lat);
+    const pin = (x, y, color, label) => {
       ctx.save();
-      ctx.translate(x, y);
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(0, -cell * 0.12, cell * 0.2, 0, 7);
+      ctx.arc(x, y - 10, 9, 0, 7);
       ctx.fill();
       ctx.beginPath();
-      ctx.moveTo(0, cell * 0.22);
-      ctx.lineTo(-cell * 0.18, -cell * 0.02);
-      ctx.lineTo(cell * 0.18, -cell * 0.02);
+      ctx.moveTo(x, y + 8);
+      ctx.lineTo(x - 8, y - 4);
+      ctx.lineTo(x + 8, y - 4);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = '#0b0c10';
       ctx.beginPath();
-      ctx.arc(-cell * 0.06, -cell * 0.15, cell * 0.045, 0, 7);
-      ctx.arc(cell * 0.06, -cell * 0.15, cell * 0.045, 0, 7);
+      ctx.arc(x, y - 10, 3, 0, 7);
       ctx.fill();
       ctx.restore();
+      const name = label ? `  ${label}` : '';
+      ctx.font = '600 13px system-ui,sans-serif';
+      ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(name).width;
+      const tx = x + 12;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(tx - 3, y - 4 - 10, tw + 6, 20);
+      ctx.fillStyle = '#e8eaf0';
+      ctx.fillText(name, tx, y - 4);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - 1, y - 20, 3, 26);
     };
-    const src = this.board.src, dst = this.board.dst;
-    drawPin(cx(src.c), cy(src.r), '#38bdf8'); // pickup
-    // flag
-    const fx = cx(dst.c), fy = cy(dst.r);
-    ctx.strokeStyle = '#e5e7eb';
-    ctx.lineWidth = cell * 0.06;
-    ctx.beginPath();
-    ctx.moveTo(fx, fy - cell * 0.3);
-    ctx.lineTo(fx, fy + cell * 0.3);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(fx, fy - cell * 0.3);
-    ctx.lineTo(fx + cell * 0.3, fy - cell * 0.18);
-    ctx.lineTo(fx, fy - cell * 0.06);
-    ctx.closePath();
-    ctx.fillStyle = '#4ade80';
-    ctx.fill();
+    pin(sx0, sy0, '#38bdf8', this.geo.places.from.name);
+    pin(sx1, sy1, '#4ade80', this.geo.places.to.name);
   },
 
-  drawCarAt(ctx, cx, cy, cell, progress) {
-    const pts = this.route;
-    if (pts.length < 2) return;
-    const t = Math.min(1, Math.max(0, progress || 0)) * (pts.length - 1);
-    const i = Math.min(pts.length - 2, Math.floor(t));
-    const f = t - i;
-    const a = pts[i], b = pts[i + 1];
-    const x = cx(a.c) + (cx(b.c) - cx(a.c)) * f;
-    const y = cy(a.r) + (cy(b.r) - cy(a.r)) * f;
-    const dr = b.r - a.r, dc = b.c - a.c;
-    const angle = dr === -1 ? DIR_ANGLE.up : dr === 1 ? DIR_ANGLE.down : dc === -1 ? DIR_ANGLE.left : DIR_ANGLE.right;
-    drawCar(ctx, x, y, angle, cell * 0.42);
+  drawBadges(ctx, T) {
+    const source = this.geo.source || '?';
+    const label = source === 'overpass' ? 'LIVE' : source === 'snapshot' ? 'SNAPSHOT' : source === 'cache' ? 'CACHE' : source.toUpperCase();
+    const box = (text, x, y, color, bg) => {
+      ctx.font = '700 12px ui-monospace,monospace';
+      const w = ctx.measureText(text).width + 12;
+      ctx.fillStyle = bg;
+      ctx.fillRect(x, y, w, 21);
+      ctx.fillStyle = color;
+      ctx.fillText(text, x + 6, y + 14);
+      return w;
+    };
+    box(label, 8, 8, source === 'snapshot' ? '#fbbf24' : '#4ade80', 'rgba(8,18,26,0.85)');
+    ctx.font = '11px system-ui,sans-serif';
+    ctx.fillStyle = 'rgba(232,234,240,0.85)';
+    ctx.fillText(`${ATTRIBUTION}`, 8, T.H - 10);
   },
 
+  // ---- animation + result ------------------------------------------------------
   render(res) {
     const moves = answerMoves(res.answers);
     const { walk, optimal } = verdictWeighted(this.board, moves);
@@ -292,9 +523,7 @@ export const gmapsSkin = {
     this.cost = walk.cost;
     this.optimal = optimal;
 
-    // turn-by-turn + ETA band
     if (this.resultEl) {
-      const turns = turnInstructions(walk.cells);
       const minutes = Math.round(walk.cost);
       const eta = walk.reached
         ? `${minutes} min`
@@ -302,16 +531,20 @@ export const gmapsSkin = {
       const optimalLine = optimal === null
         ? 'no route exists'
         : walk.reached && walk.cost === optimal
-          ? `least cost verified — 0 min over the optimum`
+          ? `least cost verified — 0 over the optimum`
           : `cost ${walk.cost} vs optimum ${optimal}`;
+      const honesty = this.dead
+        ? 'Map unavailable — this round-trip ran on the simulated city.'
+        : `Road network: ${SOURCE_LABEL[this.geo.source] || this.geo.source}. Cost = REAL road class; congestion multiplier = SIMULATED.`;
       this.resultEl.innerHTML = `
         <div class="eta-band"><span class="eta-val">≈ ${eta}</span><span class="eta-note">${walk.steps} cells · ${walk.cost} cost · ${optimalLine}</span></div>
         <ol class="turns">
           ${turnInstructions(walk.cells).map((s) => `<li>${s}</li>`).join('') || '<li>route too short</li>'}
-        </ol>`;
+        </ol>
+        <div class="geo-note">${honesty}</div>`;
     }
 
-    const animate = !!document.querySelector('#map-animate')?.checked;
+    const animate = !!document.querySelector('#geo-animate')?.checked;
     if (!animate) { this.progress = 1; this.draw(1); return; }
     this.animating = true;
     this.progress = 0;
@@ -329,6 +562,7 @@ export const gmapsSkin = {
   },
 
   dispose() {
+    this.disposed = true;
     this.animating = false;
     if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.raf);
     this.raf = null;

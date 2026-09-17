@@ -537,7 +537,7 @@ async function recordLive(hash, payload, out, config) {
 export const RUNS_CAP = 500;
 export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 
-const RUN_SKINS = ['grid', 'gmaps'];
+const RUN_SKINS = ['grid', 'gmaps', 'sim'];
 const RUN_MODES = ['policy', 'plan'];
 const RUN_SOURCES = ['live', 'stub', 'replay'];
 const RUN_OUTCOMES = ['reached', 'stuck', 'exhausted', 'wall', 'error'];

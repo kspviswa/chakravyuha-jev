@@ -25,12 +25,13 @@ import {
 } from './lib/jev.js';
 import { gridSkin } from './skins/grid.js';
 import { gmapsSkin } from './skins/gmaps.js';
+import { simSkin } from './skins/sim.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
 const storage = typeof localStorage !== 'undefined' ? localStorage : memoryStorage();
 const transport = createTransport({ base: BASE, storage });
 
-const SKINS = { grid: gridSkin, gmaps: gmapsSkin };
+const SKINS = { grid: gridSkin, gmaps: gmapsSkin, sim: simSkin };
 
 const MODE_STORAGE = 'jev.gameMode';
 
@@ -119,11 +120,14 @@ function mountSkin(id) {
     b.classList.toggle('active', b.dataset.skin === currentSkin.id));
   const box = $('skin-controls');
   box.textContent = '';
-  $('skin-result').hidden = currentSkin.id !== 'gmaps';
-  if (currentSkin.id === 'gmaps') $('skin-result').innerHTML = '';
-  currentSkin.mount({ container: box, autoAsk: () => ask(), resultEl: $('skin-result') });
+  const showsResult = currentSkin.id === 'gmaps' || currentSkin.id === 'sim';
+  $('skin-result').hidden = !showsResult;
+  if (showsResult) $('skin-result').innerHTML = '';
+  const mount = currentSkin.mount({
+    container: box, autoAsk: () => ask(), resultEl: $('skin-result'),
+  });
   $('board-caption').innerHTML = currentSkin.caption();
-  currentSkin.begin();
+  Promise.resolve(mount).finally(() => currentSkin.begin());
 }
 
 skinBar.addEventListener('click', (e) => {
@@ -448,7 +452,7 @@ function buildRunRecord({ game, v, body, mode, outcome }) {
   // policy run was rejected by the server ("field 'mode' must be a string") and
   // silently never recorded.
   const runMode = mode || currentMode();
-  const weighted = skin === 'gmaps';
+  const weighted = skin === 'gmaps' || skin === 'sim';
   const reached = v ? !!v.reached : (game ? !!game.reached : false);
   const checks = v ? v.checks : [];
   const passed = checks.filter((c) => c.pass).length;
