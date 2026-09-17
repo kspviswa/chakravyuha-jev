@@ -6,26 +6,17 @@ import path from 'node:path';
 import { createServer } from '../server.mjs';
 
 /**
- * Boot a shim on an ephemeral port. Each server gets its OWN recordings
- * directory by default: two suites that share `fixtures/recorded` race on the
- * same `<hash>.live.json` filename and clobber each other's fixture. Pass
- * `recordedDir` (or `useRealFixtures: true`) to opt back into the real one.
+ * Boot a shim on an ephemeral port with its OWN runs file, so no suite can
+ * touch the real repo-root runs.jsonl.
  */
 export function startServer(overrides = {}) {
-  const { useRealFixtures, ...rest } = overrides;
-  const scratch = useRealFixtures
-    ? undefined
-    : rest.recordedDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jev-fixtures-'));
-  // Each server also gets its OWN runs file: the run-history suite (and any
-  // accidental /api/runs traffic from other tests) must never touch the real
-  // repo-root runs.jsonl — the recorded-fixtures race, redux.
-  const runsFile = rest.runsFile
+  const runsFile = overrides.runsFile
     ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jev-runs-')) + '/runs.jsonl';
-  const server = createServer({ rateLimit: 100_000, recordedDir: scratch, runsFile, ...rest });
+  const server = createServer({ rateLimit: 100_000, ...overrides, runsFile });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, base: `http://127.0.0.1:${server.address().port}`, recordedDir: scratch, runsFile });
+      resolve({ server, base: `http://127.0.0.1:${server.address().port}`, runsFile });
     });
   });
 }
@@ -46,65 +37,50 @@ export async function postJev(base, payload, opts = {}) {
   return { status: r.status, body };
 }
 
-// A weighted navigation board: S top-left, D top-right, a cheap corridor on
-// the bottom row vs a congested direct row. stubAnswer must route around.
-export const NAV_PAYLOAD = {
+// A valid polar chakravyuha state the shim will accept, with the full
+// first-step fan-out the policy loop actually sends.
+export const CH_PAYLOAD = {
   state: {
-    task: 'navigation_weighted',
-    grid: ['S.D', '...'],
-    weights: [[0, 9, 0], [1, 1, 1]],
-    legend: { S: 'pickup', D: 'drop-off', '.': 'road', weights: '1-5 congestion' },
-    source: { row: 0, col: 0 },
-    destination: { row: 0, col: 2 },
-    rules: 'Entering a cell costs its weight; start free.',
-    objective: 'least-cost route',
+    task: 'chakravyuha_policy',
+    maze: { rings: 3, sectors: 6, centre_gate_sector: 2 },
+    open_radial: [
+      [true, true, true, true, true, true],
+      [true, true, true, true, true, true],
+    ],
+    open_circ: [
+      [true, true, true, true, true, true],
+      [true, true, true, true, true, true],
+      [true, true, true, true, true, true],
+    ],
+    warriors: [{ ring: 2, sector: 5 }],
+    abhimanyu: { ring: 3, sector: 0 },
+    goal: 'the centre (ring 0)',
+    visited: [{ ring: 3, sector: 0 }],
+    step: 1,
+    maxSteps: 36,
+    rules: 'polar moves: inward, outward, clockwise, counterclockwise',
+    objective: 'pick the best next move toward the centre',
   },
   questions: {
-    reachable: { type: 'noul' },
-    cost_band: { type: 'choice' },
-    eta_band: { type: 'choice' },
-    route_difficulty: { type: 'score' },
-    move_1: { type: 'choice' },
-    move_2: { type: 'choice' },
-    move_3: { type: 'choice' },
-    move_4: { type: 'choice' },
+    reachable: { type: 'noul', instructions: 'reachable?', criteria: { true: 'yes', false: 'no' } },
+    route_length: { type: 'choice', instructions: 'how long?', criteria: { '1-5': null, '6-10': null } },
+    maze_difficulty: { type: 'score', instructions: 'how hard?', criteria: ['easy', 'hard'] },
+    warriors_blocking: { type: 'noul', instructions: 'blocked?', criteria: { true: 'yes', false: 'no' } },
+    move_inward: { type: 'noul', instructions: 'good?' },
+    move_outward: { type: 'noul', instructions: 'good?' },
+    move_clockwise: { type: 'noul', instructions: 'good?' },
+    move_counterclockwise: { type: 'noul', instructions: 'good?' },
   },
 };
 
-// A small fixed board + question set shared by several tests.
-export const FIXED_PAYLOAD = {
-  state: {
-    task: 'grid_pathfinding',
-    grid: ['S....', '.....', '....D'],
-    legend: { S: 'source', D: 'destination' },
-    source: { row: 0, col: 0 },
-    destination: { row: 2, col: 4 },
-    rules: '4-directional moves',
-    objective: 'shortest path',
-  },
-  questions: {
-    reachable: { type: 'noul', instructions: 'reachable?' },
-    path_length: { type: 'choice', criteria: { '1-5': null, '6-10': null } },
-    maze_difficulty: { type: 'score', criteria: ['trivial', 'hard'] },
-    move_1: { type: 'choice', criteria: { up: null, down: null, left: null, right: null } },
-    move_2: { type: 'choice', criteria: { up: null, down: null, left: null, right: null } },
-  },
-};
-
+// The same shape with exactly 4 questions — used by the debug-log test, which
+// asserts the logged `questions` count.
 export const SMALL_PAYLOAD = {
-  state: {
-    task: 'grid_pathfinding',
-    grid: ['SD'],
-    legend: {},
-    source: { row: 0, col: 0 },
-    destination: { row: 0, col: 1 },
-    rules: '4-directional moves',
-    objective: 'shortest path',
-  },
+  state: CH_PAYLOAD.state,
   questions: {
     reachable: { type: 'noul' },
-    move_1: { type: 'choice' },
-    path_length: { type: 'choice' },
+    move_inward: { type: 'noul' },
+    route_length: { type: 'choice' },
     maze_difficulty: { type: 'score' },
   },
 };

@@ -1,7 +1,7 @@
-// history.js — the run-history page: per-group statistics (source · mode ·
-// skin), a sortable run table, filters, CSV export, clear-history and a
-// graceful "server down → localStorage cache" fallback. It never merges
-// dissimilar runs together and never throws an unhandled rejection.
+// history.js — the run-history page: per-group statistics (difficulty · mode),
+// a sortable run table, filters, CSV export, clear-history and a graceful
+// "server down → localStorage cache" fallback. It never merges dissimilar runs
+// together and never throws an unhandled rejection.
 
 import { deriveBase } from './lib/transport.js';
 import { summarize } from './lib/stats.js';
@@ -18,9 +18,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (m) => (
 let allRuns = [];
 let sortCol = 'at';
 let sortDesc = true;
-const filters = { source: 'all', mode: 'all', skin: 'all' };
-
-const SOURCE_COLORS = { live: 'live', stub: 'stub', replay: 'replay' };
+const filters = { difficulty: 'all', mode: 'all' };
 
 // --------------------------------------------------------------- helpers
 const msPerStep = (r) => (Number.isFinite(r.totalMs) ? r.totalMs / Math.max(r.steps || 0, 1) : null);
@@ -84,33 +82,30 @@ async function loadRuns() {
 // ---------------------------------------------------------------- filtering
 function currentFiltered() {
   return allRuns.filter((r) =>
-    (filters.source === 'all' || r.source === filters.source) &&
-    (filters.mode === 'all' || r.mode === filters.mode) &&
-    (filters.skin === 'all' || r.skin === filters.skin));
+    (filters.difficulty === 'all' || r.difficulty === filters.difficulty) &&
+    (filters.mode === 'all' || r.mode === filters.mode));
 }
 
-function groupKey(r) { return `${r.source}|${r.mode}|${r.skin}`; }
+function groupKey(r) { return `${r.difficulty}|${r.mode}`; }
 
 function populateFilters() {
-  const sets = { source: new Set(), mode: new Set(), skin: new Set() };
+  const sets = { difficulty: new Set(), mode: new Set() };
   for (const r of allRuns) {
-    if (r.source) sets.source.add(r.source);
+    if (r.difficulty) sets.difficulty.add(r.difficulty);
     if (r.mode) sets.mode.add(r.mode);
-    if (r.skin) sets.skin.add(r.skin);
   }
   for (const [kind, values] of Object.entries(sets)) {
     const sel = $(`f-${kind}`);
     const chosen = sel.value;
     sel.innerHTML = '';
-    const opt = (v) => {
-      const o = document.createElement('option');
-      o.value = o.textContent = v;
-      return o;
-    };
     const allOpt = document.createElement('option');
     allOpt.value = 'all'; allOpt.textContent = 'all';
     sel.appendChild(allOpt);
-    for (const v of [...values].sort()) sel.appendChild(opt(v));
+    for (const v of [...values].sort()) {
+      const o = document.createElement('option');
+      o.value = o.textContent = v;
+      sel.appendChild(o);
+    }
     sel.value = [...values].includes(chosen) ? chosen : 'all';
   }
 }
@@ -133,7 +128,7 @@ function statGridHtml(groups) {
   const roundNum = (v, mode) => (v === null ? '—' : display(v, mode));
 
   return groups.map(([key, runs]) => {
-    const [source, mode, skin] = key.split('|');
+    const [difficulty, mode] = key.split('|');
     const rows = METRICS.map((m) => {
       const s = summarize(runs.map((r) => valueOf(r, m.key)));
       return `
@@ -150,7 +145,7 @@ function statGridHtml(groups) {
     }).join('');
     return `
       <section class="stat-card">
-        <h3 class="group-key"><span class="src ${SOURCE_COLORS[source]}">${escapeHtml(source)}</span> · ${escapeHtml(mode)} · ${escapeHtml(skin)} <em>n=${runs.length}</em></h3>
+        <h3 class="group-key"><span class="src live">${escapeHtml(difficulty)}</span> · ${escapeHtml(mode)} <em>n=${runs.length}</em></h3>
         <div class="stat-table-scroll">
           <table class="stat-table">
             <thead>
@@ -168,15 +163,13 @@ function statGridHtml(groups) {
 function sortValue(run, col) {
   switch (col) {
     case 'at': return new Date(run.at).getTime() || 0;
-    case 'skin': return run.skin;
+    case 'difficulty': return run.difficulty;
     case 'mode': return run.mode;
-    case 'source': return run.source;
     case 'outcome': return run.outcome;
     case 'steps': return Number.isFinite(run.steps) ? run.steps : -1;
-    case 'cost': return Number.isFinite(run.cost) ? run.cost : -1;
     case 'accuracy': return Number.isFinite(run.accuracyScore) ? run.accuracyScore : -1;
     case 'totalMs': return Number.isFinite(run.totalMs) ? run.totalMs : -1;
-    case 'board': return String(run.board?.rows || '');
+    case 'board': return String(run.rings || '');
     default: return 0;
   }
 }
@@ -194,17 +187,10 @@ function stepsCell(run) {
   return `${escapeHtml(run.steps)} / ${o === null || o === undefined ? '—' : escapeHtml(o)}`;
 }
 
-function costCell(run) {
-  if (run.cost === null || run.cost === undefined) return '—';
-  const o = run.optimalCost;
-  return `${escapeHtml(run.cost)} / ${o === null || o === undefined ? '—' : escapeHtml(o)}`;
-}
-
 function boardCell(run) {
-  const b = run.board || {};
-  const size = (b.rows && b.cols) ? `${escapeHtml(b.rows)}×${escapeHtml(b.cols)}` : '—';
-  const diff = b.difficulty ? ` ${escapeHtml(b.difficulty)}` : '';
-  return `${size}${diff}`;
+  const size = (run.rings && run.sectors) ? `${escapeHtml(run.rings)}×${escapeHtml(run.sectors)}` : '—';
+  const hash = run.boardHash ? ` · ${escapeHtml(String(run.boardHash))}` : '';
+  return `${size}${hash}`;
 }
 
 function outcomeHtml(run) {
@@ -214,22 +200,17 @@ function outcomeHtml(run) {
 
 function tableRows(runs) {
   const sorted = [...runs].sort(compare);
-  return sorted.map((r) => {
-    const srcCls = SOURCE_COLORS[r.source] || '';
-    return `
+  return sorted.map((r) => `
       <tr>
         <td class="nowrap" title="${escapeHtml(r.at || '')}">${escapeHtml(localTime(r.at))}</td>
-        <td>${escapeHtml(r.skin)}</td>
+        <td>${escapeHtml(r.difficulty)}</td>
         <td>${escapeHtml(r.mode)}</td>
-        <td><span class="src ${srcCls}">${escapeHtml(r.source)}</span></td>
         <td>${outcomeHtml(r)}</td>
         <td>${stepsCell(r)}</td>
-        <td>${costCell(r)}</td>
         <td>${display(score(r.accuracyScore), 'sc')}</td>
         <td>${display(score(r.totalMs), 'ms')} ms</td>
         <td>${boardCell(r)}</td>
-      </tr>`;
-  }).join('');
+      </tr>`).join('');
 }
 
 function headerArrow(col) {
@@ -253,19 +234,16 @@ function csvEscape(v) {
 }
 
 function csvRows(runs) {
-  const head = ['at', 'skin', 'mode', 'source', 'outcome', 'reached', 'steps', 'optimalSteps',
-    'cost', 'optimalCost', 'optimalityScore', 'accuracyScore', 'checksPassed', 'checksTotal',
-    'totalMs', 'msPerStep', 'lastStepMs', 'calls', 'questions', 'costUsd',
-    'boardRows', 'boardCols', 'difficulty', 'boardHash'];
-  const rows = [...runs].sort(compare).map((r) => {
-    const b = r.board || {};
-    return [
-      r.at, r.skin, r.mode, r.source, r.outcome, r.reached, r.steps, r.optimalSteps,
-      r.cost, r.optimalCost, r.optimalityScore, r.accuracyScore, r.checksPassed, r.checksTotal,
-      r.totalMs, msPerStep(r), r.lastStepMs, r.calls, r.questions, r.costUsd,
-      b.rows, b.cols, b.difficulty, b.hash,
-    ];
-  });
+  const head = ['at', 'difficulty', 'mode', 'outcome', 'steps', 'optimalSteps',
+    'optimalityScore', 'accuracyScore', 'totalMs', 'msPerStep', 'lastStepMs',
+    'calls', 'questions', 'tokensIn', 'tokensOut', 'costUsd',
+    'rings', 'sectors', 'boardHash', 'model', 'id'];
+  const rows = [...runs].sort(compare).map((r) => [
+    r.at, r.difficulty, r.mode, r.outcome, r.steps, r.optimalSteps,
+    r.optimalityScore, r.accuracyScore, r.totalMs, msPerStep(r), r.lastStepMs,
+    r.calls, r.questions, r.tokensIn, r.tokensOut, r.costUsd,
+    r.rings, r.sectors, r.boardHash, r.model, r.id,
+  ]);
   return [head, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n');
 }
 
@@ -275,7 +253,7 @@ function exportCsv() {
   const a = document.createElement('a');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   a.href = URL.createObjectURL(blob);
-  a.download = `pathpuzzle-runs-${stamp}.csv`;
+  a.download = `chakravyuha-runs-${stamp}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -290,8 +268,8 @@ function render() {
 
   const emptyState = `
     <div class="empty-state block">
-      <p>No runs recorded yet — go play one.</p>
-      <a class="navlink" href="./index.html">← Back to the puzzle</a>
+      <p>No runs recorded yet — go thread a chakravyuha.</p>
+      <a class="navlink" href="./index.html">← Back to the maze</a>
     </div>`;
 
   if (filtered.length === 0) {
@@ -337,7 +315,7 @@ document.querySelectorAll('#runs-table th[data-col]').forEach((th) => {
   });
 });
 
-for (const kind of ['source', 'mode', 'skin']) {
+for (const kind of ['difficulty', 'mode']) {
   $(`f-${kind}`).addEventListener('change', (e) => {
     filters[kind] = e.target.value;
     render();

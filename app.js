@@ -1,39 +1,41 @@
-// app.js — the shell: skin switch, transport switch, BYOK key UI, meters,
-// export, the referee panel, and the game loop. Two question modes:
-//   policy (default)  ask → apply → ask: per-step local snap judgments
-//   plan              the old global ask (move k of the whole path), kept
-//                     for comparison — live runs collapse and Jev's low
-//                     confidence shows it
+// app.js — the Chakravyuha shell. One skin, one transport (the same-origin
+// shim), BYOK, live-only. Two question modes:
+//   policy (default)  ask → apply → ask: at each step Jev judges the legal
+//                     next moves; the loop applies its argmax and ANIMATES the hop
+//   plan              one global ask ("move k of the route"), kept for
+//                     comparison and animated hop by hop afterwards
 //
-// THE RULE (unchanged): there is no pathfinding in this file, nor in lib/ or
-// skins/. The board is serialised into a `state`, typed questions are sent to
-// Jev, and the direction list Jev returns is applied verbatim. In policy
-// mode the loop enumerates the legal action space (one noul per candidate) and
-// applies the argmax over Jev's own probabilities — that is not a search, and
-// lib/referee.js is used only to *check* the answer afterwards.
+// THE RULE: there is no pathfinding in this file, nor in lib/ (outside
+// lib/referee.js) or skins/. The maze is serialised into a `state`, typed
+// questions are sent to Jev, and the directions Jev returns are applied
+// verbatim — animated through lib/animator.js. lib/referee.js is used only to
+// CHECK the answer afterwards; its comparison route is drawn only once a run
+// has finished, and labelled "referee's".
 //
-// BYOK: the key is never logged, never put in a URL, never written to a
-// file, and never exported. It lives in localStorage only if the user ticks
-// "remember".
+// BYOK: the key is never logged, never put in a URL, never written to a file,
+// and never exported. It lives in localStorage only if the user ticks
+// "remember". Opening the page, changing difficulty or drawing a new maze
+// never calls Jev and never reveals a route.
 
 import {
   createTransport, deriveBase, loadSavedKey, rememberKey, forgetKey, memoryStorage,
 } from './lib/transport.js';
 import {
   askJev, answerMoves, runPolicyGame, buildPolicyBody,
-  buildPolicyGridState, buildPolicyNavState,
+  buildPolicyChakraState, chakraPlanState, chakraPlanQuestions,
 } from './lib/jev.js';
-import { gridSkin } from './skins/grid.js';
-import { gmapsSkin } from './skins/gmaps.js';
-import { simSkin } from './skins/sim.js';
+import { boardHash } from './lib/chakra.js';
+import { chakraSkin } from './skins/chakravyuha.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
 const storage = typeof localStorage !== 'undefined' ? localStorage : memoryStorage();
 const transport = createTransport({ base: BASE, storage });
 
-const SKINS = { grid: gridSkin, gmaps: gmapsSkin, sim: simSkin };
-
+const DIFF_STORAGE = 'jev.difficulty';
 const MODE_STORAGE = 'jev.gameMode';
+const INSTANT_STORAGE = 'jev.instant';
+
+const currentSkin = chakraSkin;
 
 const num = (s) => Number(s.slice(5));
 const confPct = (c) => { const n = Number(c); return Number.isFinite(n) ? Math.round(n * 100) : 100; };
@@ -41,13 +43,12 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (m) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
 ));
 
+const $ = (id) => document.getElementById(id);
+
 // ------------------------------------------------------------------ state
-let currentSkin = null;
 let busy = false;
 let lastRun = null;
 let lastMode = null;
-
-const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------- key handling
 const keyField = $('key-field');
@@ -72,34 +73,10 @@ function forget() {
 
 $('forget-key').addEventListener('click', forget);
 
-// ----------------------------------------------------------- transport UI
-const transportSelect = $('transport');
-transportSelect.value = transport.mode;
-const directNote = $('direct-note');
-const transportChip = $('transport-chip');
-const stubNote = $('stub-note');
-
-function refreshTransportUI() {
-  const m = transport.mode;
-  transportSelect.value = m;
-  transportChip.textContent = m === 'direct' ? 'transport: direct' : 'transport: proxy';
-  directNote.hidden = m !== 'direct';
-  if (m === 'direct' && !currentKey()) directNote.textContent =
-    'direct needs a key in the box above — and it is CORS-blocked by api.typesafe.ai today (no Access-Control-Allow-Origin). Prefer the proxy transport.';
-  else if (m === 'direct') directNote.textContent =
-    'CORS block: api.typesafe.ai sends no Access-Control-Allow-Origin, so a browser cannot call it directly today. Prefer the proxy transport.';
-}
-
-transportSelect.addEventListener('change', () => {
-  transport.setMode(transportSelect.value);
-  refreshTransportUI();
-});
-
 // --------------------------------------------------------------- mode badge
 const MODE_BADGES = {
-  live:   { label: 'LIVE', cls: 'live' },
-  replay: { label: 'REPLAY', cls: 'replay' },
-  stub:   { label: 'STUB — local solver, not Jev', cls: 'stub' },
+  live: { label: 'LIVE', cls: 'live' },
+  ready: { label: 'READY', cls: '' },
 };
 
 function setModeBadge(mode) {
@@ -109,33 +86,6 @@ function setModeBadge(mode) {
   el.textContent = b.label;
   el.className = 'mode ' + b.cls;
 }
-
-// -------------------------------------------------------------- skin switch
-const skinBar = $('skin-bar');
-
-function mountSkin(id) {
-  if (currentSkin) currentSkin.dispose?.();
-  currentSkin = SKINS[id] || gridSkin;
-  skinBar.querySelectorAll('.skin-btn').forEach((b) =>
-    b.classList.toggle('active', b.dataset.skin === currentSkin.id));
-  const box = $('skin-controls');
-  box.textContent = '';
-  const showsResult = currentSkin.id === 'gmaps' || currentSkin.id === 'sim';
-  $('skin-result').hidden = !showsResult;
-  if (showsResult) $('skin-result').innerHTML = '';
-  const mount = currentSkin.mount({
-    container: box, autoAsk: () => ask(), resultEl: $('skin-result'),
-  });
-  $('board-caption').innerHTML = currentSkin.caption();
-  Promise.resolve(mount).finally(() => currentSkin.begin());
-}
-
-skinBar.addEventListener('click', (e) => {
-  const btn = e.target.closest('.skin-btn');
-  if (!btn || busy) return;
-  try { storage.setItem('jev.skin', btn.dataset.skin); } catch { /* ignore */ }
-  mountSkin(btn.dataset.skin);
-});
 
 // ------------------------------------------------------------- game-mode toggle
 const modeBar = $('mode-bar');
@@ -149,8 +99,8 @@ function refreshModeUI() {
   modeBar.querySelectorAll('.mode-btn').forEach((b) =>
     b.classList.toggle('active', b.dataset.gameMode === mode));
   $('mode-note').textContent = mode === 'plan'
-    ? 'Plan mode is the OLD global question (“move k of the path”) — kept for comparison. In live runs its per-move answers collapse and Jev’s own low confidence shows it.'
-    : 'Policy mode is the new loop: at each step Jev only judges the legal next moves, and the loop applies its best guess.';
+    ? 'Plan mode asks for the whole route up front (move 1, move 2, …). Kept for comparison: on a real maze its per-move confidence usually collapses.'
+    : 'Policy mode is the real loop: at each step Jev only judges the legal next moves, and the shell applies the strongest one — then animates it.';
 }
 
 modeBar.addEventListener('click', (e) => {
@@ -159,6 +109,18 @@ modeBar.addEventListener('click', (e) => {
   try { storage.setItem(MODE_STORAGE, btn.dataset.gameMode); } catch { /* ignore */ }
   refreshModeUI();
 });
+
+// --------------------------------------------------------------- difficulty
+function loadDifficulty() {
+  try {
+    const d = storage.getItem(DIFF_STORAGE);
+    return ['easy', 'medium', 'hard'].includes(d) ? d : 'easy';
+  } catch { return 'easy'; }
+}
+
+function loadInstant() {
+  try { return storage.getItem(INSTANT_STORAGE) === '1'; } catch { return false; }
+}
 
 // ------------------------------------------------------------------ errors
 function showErrorCard(code, message, hint) {
@@ -173,12 +135,12 @@ function hideErrorCard() { $('error-card').hidden = true; }
 async function ask() {
   if (busy) return;
   const btn = $('ask');
+  $('cancel').hidden = true;
   btn.disabled = true;
   busy = true;
   hideErrorCard();
   $('export-btn').disabled = true;
 
-  // BYOK bookkeeping: persist only when the user asked to remember.
   const key = currentKey();
   if (key) {
     if (rememberBox.checked) rememberKey(storage, key);
@@ -191,27 +153,79 @@ async function ask() {
   } finally {
     btn.disabled = false;
     busy = false;
+    $('cancel').hidden = true;
   }
   if (!ok) $('export-btn').disabled = true;
 }
 
+async function askPolicy(key) {
+  currentSkin.begin();
+  const board = currentSkin.board;
+  $('state-pre').textContent = JSON.stringify({
+    mode: 'policy',
+    loop: 'ask → apply → ask',
+    cap: `maxSteps = 2 × R × S = ${2 * board.R * board.S}`,
+    sampleState: buildPolicyChakraState(board, {
+      ring: board.src.ring, sector: board.src.sector,
+      visited: [board.src], step: 1, maxSteps: 2 * board.R * board.S,
+    }),
+  }, null, 2);
+
+  const game = await runPolicyGame({
+    board, transport, model: 'jev-latest', key,
+    onStep: (h) => currentSkin.animateHop(h),
+  });
+
+  if (game.outcome === 'error') {
+    const e = game.error || {};
+    const hint = e.code === 'no_key'
+      ? 'BYOK: paste your TypeSafe key in the keycard above, then press Ask Jev again.'
+      : e.code === 'network'
+        ? 'Check the server is running (the same-origin shim is required — api.typesafe.ai is CORS-blocked).'
+        : 'The server said no — see the code above.';
+    showErrorCard(e.code || 'error', e.message || 'request failed', hint);
+    recordRun({ game, v: null, body: { mode: 'live' }, outcome: 'error' });
+    return false;
+  }
+
+  const body = buildPolicyBody(game);
+  body.mode = 'live';
+  setModeBadge('live');
+
+  lastRun = { sent: { mode: 'policy', skin: currentSkin.id, game }, received: body };
+  renderAnswers(body);
+  const moves = answerMoves(body.answers);
+  const v = currentSkin.check(moves);
+  currentSkin.render();
+  renderReferee(v);
+  renderMeters(body, {
+    calls: game.calls.length, lastMs: body._last_ms,
+    optimal: v.optimal, steps: v.steps, qPerCall: game.lastQuestions,
+  });
+  setRunOutcome(game, v);
+  recordRun({ game, v, body });
+  return true;
+}
+
 async function askPlan(key) {
-  const { state, questions } = currentSkin.begin();
+  currentSkin.begin();
+  const board = currentSkin.board;
+  const state = chakraPlanState(board);
+  const questions = chakraPlanQuestions(board);
+  const sample = Object.fromEntries(Object.entries(questions).slice(0, 3));
   $('state-pre').textContent =
-    JSON.stringify({ state, questions: Object.fromEntries(Object.entries(questions).slice(0, 3)) }, null, 2) +
-    `\n… plus ${Object.keys(questions).length - 3} more questions in the same request.`;
+    JSON.stringify({ mode: 'plan', state, questions: sample }, null, 2) +
+    `\n… plus ${Object.keys(questions).length - 3} more move questions in the same request.`;
 
   const res = await askJev(transport, { state, questions, key });
 
   if (!res.ok) {
-    const hint = res.error?.code === 'network'
-      ? 'Check the server is running, or switch to the proxy transport.'
-      : res.error?.code === 'forbidden'
-        ? 'Blocked by the server. It must be running for the proxy transport.'
-        : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
-    showErrorCard(res.error?.code || 'error', res.error?.message || 'request failed', hint);
-    if (res.body?.mode) setModeBadge(res.body.mode);
-    recordRun({ mode: 'plan', body: res.body || {}, v: null, outcome: 'error' });
+    const e = res.error || {};
+    const hint = e.code === 'no_key'
+      ? 'BYOK: paste your TypeSafe key in the keycard above, then press Ask Jev again.'
+      : 'Check the server is running.';
+    showErrorCard(e.code || 'error', e.message || 'request failed', hint);
+    recordRun({ mode: 'plan', body: { mode: 'live' }, v: null, outcome: 'error' });
     return false;
   }
 
@@ -222,106 +236,27 @@ async function askPlan(key) {
     return false;
   }
 
-  if (body.mode) setModeBadge(body.mode);
-  else setModeBadge(lastMode);
-  noteMode(body.mode);
-
-  lastRun = {
-    sent: { mode: 'plan', state, questions },
-    received: body,
-  };
-  setRunOutcome(null);
+  body.mode = 'live';
+  setModeBadge('live');
+  lastRun = { sent: { mode: 'plan', state, questions }, received: body };
   renderAnswers(body);
   const moves = answerMoves(body.answers);
   const v = currentSkin.check(moves);
+  for (let i = 1; i < v.path.length; i++) {
+    await currentSkin.animateHop({ from: v.path[i - 1], to: v.path[i], step: i });
+  }
+  currentSkin.render();
   renderReferee(v);
-  renderMeters(body, {
-    calls: 1, lastMs: body._ms, optimal: v.optimal,
-    steps: v.steps, cost: v.cost, weighted: !!currentSkin.weighted,
-  });
-  currentSkin.render(body);
+  renderMeters(body, { calls: 1, lastMs: body._ms, optimal: v.optimal, steps: v.steps });
+  setRunOutcome({ outcome: v.reached ? 'reached' : 'stuck', moves, calls: [{ res: body }], maxSteps: null, reversals: 0, reached: v.reached }, v);
   recordRun({ mode: 'plan', body, v });
   return true;
-}
-
-async function askPolicy(key) {
-  // Reset the skin's visuals; the per-step loop owns the state from here on.
-  currentSkin.begin();
-  const board = currentSkin.board;
-  $('state-pre').textContent = JSON.stringify({
-    mode: 'policy',
-    weighted: !!currentSkin.weighted,
-    loop: 'ask → apply → ask',
-    cap: `maxSteps = 4 × (R + C) = ${4 * (board.R + board.C)}`,
-    sampleState: runPolicyPreview(board, currentSkin.weighted),
-  }, null, 2);
-
-  const game = await runPolicyGame({
-    board, transport, model: 'jev-latest', key,
-    weighted: !!currentSkin.weighted,
-  });
-
-  if (game.outcome === 'error') {
-    const e = game.error || {};
-    const hint = e.code === 'network'
-      ? 'Check the server is running, or switch to the proxy transport.'
-      : 'Server said no — see the code above. With the proxy transport, a bad/absent key yields STUB or a clean error.';
-    showErrorCard(e.code || 'error', e.message || 'request failed', hint);
-    const failedBody = { mode: game.calls[0]?.res?.mode || lastMode || 'stub' };
-    recordRun({ game, v: null, body: failedBody, outcome: 'error' });
-    return false;
-  }
-
-  const body = buildPolicyBody(game);
-  body.mode = game.calls[0]?.res?.mode || 'stub';
-  setModeBadge(body.mode);
-  noteMode(body.mode);
-
-  lastRun = {
-    sent: { mode: 'policy', skin: currentSkin.id, weighted: !!currentSkin.weighted, game },
-    received: body,
-  };
-  renderAnswers(body);
-  const moves = answerMoves(body.answers);
-  const v = currentSkin.check(moves);
-  renderReferee(v);
-  renderMeters(body, {
-    calls: game.calls.length, lastMs: body._last_ms,
-    optimal: v.optimal, steps: v.steps, cost: v.cost,
-    weighted: !!currentSkin.weighted,
-    qPerCall: game.lastQuestions,
-  });
-  currentSkin.render(body);
-  setRunOutcome(game, v);
-  recordRun({ game, v, body });
-  return true;
-}
-
-/** A tiny taste of the first per-step state, for the "what we sent" panel. */
-function runPolicyPreview(board, weighted) {
-  const r = board.src.r, c = board.src.c;
-  const maxSteps = 4 * (board.R + board.C);
-  const state = weighted
-    ? buildPolicyNavState(board, { r, c, visited: [{ row: r, col: c }], step: 1, maxSteps })
-    : buildPolicyGridState(board, { r, c, visited: [{ row: r, col: c }], step: 1, maxSteps });
-  return state;
-}
-
-function noteMode(mode) {
-  if (mode === 'stub' || mode === 'replay') {
-    stubNote.textContent = mode === 'stub'
-      ? 'This answer is from the local STUB solver — paste a key for real Jev.'
-      : 'REPLAY — this answer is verbatim from a recorded fixture.';
-  } else if (mode === 'live') {
-    stubNote.textContent = 'LIVE — this answer is from real Jev via your key.';
-  }
 }
 
 function renderAnswers(res) {
   const entries = Object.entries(res.answers || {});
   const moves = entries.filter(([k]) => k.startsWith('move_')).sort((a, b) => num(a[0]) - num(b[0]));
-  const cells = entries.filter(([k]) => k.startsWith('cell_'));
-  const meta = entries.filter(([k]) => !k.startsWith('move_') && !k.startsWith('cell_'));
+  const meta = entries.filter((k) => !k[0].startsWith('move_'));
 
   const row = (id, val, conf, low) => `
     <div class="ans ${low ? 'low' : ''}">
@@ -344,12 +279,9 @@ function renderAnswers(res) {
   if (moves.length > shown.length) {
     html += `<div class="ans"><span class="id">…</span><span class="val">${moves.length - shown.length} more move questions</span><span class="conf"></span></div>`;
   }
-  if (cells.length) {
-    html += `<div class="ans"><span class="id">cell_*</span><span class="val">${cells.length} per-cell probabilities → heat overlay</span><span class="conf"></span></div>`;
-  }
   const box = $('answers');
   box.classList.remove('empty');
-  box.innerHTML = html;
+  box.innerHTML = html || 'No typed answers came back.';
 }
 
 function renderReferee(v) {
@@ -361,55 +293,47 @@ function renderReferee(v) {
         <span>${escapeHtml(c.name)}${c.detail ? ` <span class="why">(${escapeHtml(c.detail)})</span>` : ''}</span>
       </div>`).join('') +
     `<div class="verdict ${v.ok ? 'ok' : 'no'}">${v.ok
-      ? (v.weighted ? 'Jev found the least-cost route.' : 'Jev solved it optimally.')
-      : (v.weighted ? 'Jev did not pick the least-cost route.' : 'Jev did not solve it optimally.')}</div>`;
+      ? 'Jev threaded the chakravyuha by the shortest route.'
+      : 'Jev did not take the shortest route.'}</div>`;
 }
 
 function renderMeters(body, extra = {}) {
   const lastMs = extra.lastMs ?? body._last_ms ?? body._ms;
-  const totalMs = extra.totalMs ?? body._total_ms ?? body._ms;
+  const totalMs = extra.totalMs ?? body._ms;
   const calls = extra.calls ?? body._calls ?? 1;
-  const optimal = extra.optimal;
-  const steps = extra.steps;
-  const cost = extra.cost;
-  const weighted = !!extra.weighted;
   $('m-decision').textContent = `${lastMs ?? '?'} ms`;
   $('m-total').textContent = `${totalMs ?? '?'} ms`;
   $('m-calls').textContent = String(calls);
   $('m-cost').textContent = body._cost_usd !== undefined ? `$${body._cost_usd.toFixed(6)}` : '—';
   $('m-q').textContent = String(extra.qPerCall ?? body._questions ?? '—');
-  // On the weighted (navigation) skin the optimum is a congestion COST, not a
-  // step count — comparing steps against it would be nonsense like "26 / 53".
-  const label = document.querySelector('#m-steps')?.closest('.meter')?.querySelector('.m-label');
-  if (label) label.textContent = weighted ? 'cost vs optimal' : 'steps vs optimal';
-  const actual = weighted ? cost : steps;
+  const optimal = extra.optimal;
+  const steps = extra.steps;
   $('m-steps').textContent = optimal === null
     ? 'unreachable'
-    : actual !== undefined
-      ? `${actual} / ${optimal}`
+    : steps !== undefined
+      ? `${steps} / ${optimal}`
       : (body._steps ?? '—');
 }
 
 /** Honest outcome banner: reached / stuck / exhausted / error. */
 function setRunOutcome(game, v) {
   const el = $('run-outcome');
-  if (!el) return;
-  if (!game) { el.hidden = true; return; }
+  if (!el || !game) { if (el) el.hidden = true; return; }
   el.hidden = false;
   el.classList.remove('reached', 'stuck', 'exhausted', 'error');
-  const prefix = `${game.calls?.length ?? 1} calls`;
+  const calls = Array.isArray(game.calls) ? game.calls.length : 0;
+  const prefix = `${calls} call${calls === 1 ? '' : 's'}`;
   if (game.outcome === 'reached') {
     el.classList.add('reached');
-    const optimalNote = (v && v.optimal !== null)
-      ? `, optimal ${v.optimal}`
-      : (v && v.optimal === null ? ' (no route exists)' : '');
-    el.textContent = `${prefix} · reached the goal${optimalNote} · ${game.moves.length} steps${game.reversals ? ` · ${game.reversals} reversal${game.reversals > 1 ? 's' : ''}` : ''}`;
+    const optimalNote = (v && v.optimal !== null) ? `, optimal ${v.optimal}` : (v && v.optimal === null ? ' (no route exists)' : '');
+    const rev = game.reversals ? ` · ${game.reversals} reversal${game.reversals > 1 ? 's' : ''}` : '';
+    el.textContent = `${prefix} · reached the centre${optimalNote} · ${game.moves.length} steps${rev}`;
   } else if (game.outcome === 'stuck') {
     el.classList.add('stuck');
     el.textContent = `${prefix} · STUCK — every legal neighbour was already visited. No backtracking search: the run stops here.`;
   } else if (game.outcome === 'exhausted') {
     el.classList.add('exhausted');
-    el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the goal.`;
+    el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the centre.`;
   } else {
     el.classList.add('error');
     el.textContent = `${prefix} · error — the run could not finish.`;
@@ -417,89 +341,63 @@ function setRunOutcome(game, v) {
 }
 
 // ------------------------------------------------------- run recording
-// Every completed run is recorded server-side via POST /api/runs. The record
-// is built here from the verdict the shell already computed (setRunOutcome /
-// exportRun reuse the same objects); the server only whitelists, validates and
-// stamps id/at. Recording is fire-and-forget: it must never alter the play
-// flow's own response, so failures to save are logged, not thrown.
-//
+// Every completed run is recorded server-side via POST /api/runs. The server
+// only whitelists/validates and stamps id/at. Recording is fire-and-forget: it
+// must never alter the play flow, so a save failure is logged, not thrown.
 // BYOK: the key never travels in this POST and never reaches the record.
 
-/** FNV-1a over the board, so identical boards share a hash. */
-function boardHash(board) {
-  const rows = (board.rows || []).map((r) => (Array.isArray(r) ? r.join('') : r)).join('|');
-  const weights = board.weights
-    ? board.weights.map((r) => (Array.isArray(r) ? r.join(',') : r)).join(';')
-    : '';
-  let h = 2166136261;
-  const s = `${rows}/${weights}`;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return (h >>> 0).toString(16);
-}
-
 /**
- * Assemble the run record the client knows how to compute. The verdict `v`
- * comes from the referee (checks, reached, steps, optimal, cost); `game` is
- * the policy run object (null in plan mode); `body` is the Jev-shaped
- * response used for the meters (mode, model, times, cost).
+ * Assemble the §9 run record. `v` is the referee verdict; `game` is the policy
+ * run object (null in plan mode); `body` is the Jev-shaped response used for
+ * the meters (mode, model, times, cost).
  */
 function buildRunRecord({ game, v, body, mode, outcome }) {
   const board = currentSkin.board;
-  const skin = currentSkin.id;
   if (!board || !body) return null;
-  // The plan-mode callers pass `mode` explicitly; the policy callers do not, so
-  // fall back to the mode the toggle is actually showing. Without this every
-  // policy run was rejected by the server ("field 'mode' must be a string") and
-  // silently never recorded.
-  const runMode = mode || currentMode();
-  const weighted = skin === 'gmaps' || skin === 'sim';
+  const runMode = 'live';
   const reached = v ? !!v.reached : (game ? !!game.reached : false);
   const checks = v ? v.checks : [];
   const passed = checks.filter((c) => c.pass).length;
   const optimal = v ? v.optimal : null;
   const steps = v ? v.steps : (game ? game.steps : 0);
-  const runOutcome = outcome || (game ? game.outcome : (v ? (v.hitWall ? 'wall' : v.reached ? 'reached' : 'stuck') : 'error'));
+  const runOutcome = outcome || (game ? game.outcome : (v ? (v.hitWall ? 'stuck' : v.reached ? 'reached' : 'stuck') : 'error'));
+  const totalMs = game && Array.isArray(game.calls) && game.outcome !== 'error'
+    ? game.totalMs
+    : (body._ms ?? 0);
+  const calls = game && Array.isArray(game.calls) ? game.calls.length : 1;
+  const questions = game && Array.isArray(game.calls) ? game.totalQuestions : (body._questions ?? 0);
+  const tokensIn = game ? game.totalTokensIn : (body.usage?.input_tokens ?? 0);
+  const tokensOut = game ? game.totalTokensOut : (body.usage?.output_tokens ?? 0);
+  const costUsd = game ? game.totalCostUsd : (body._cost_usd ?? 0);
 
-  // optimality: 1.0 is perfect. A run that did not reach the goal scores 0;
-  // a board with no route (optimal === null) scores null → excluded from the
-  // mean rather than counted as 0.
   let optimalityScore;
   if (!reached) optimalityScore = optimal === null ? null : 0;
   else if (optimal === null) optimalityScore = null;
-  else {
-    const ratio = weighted ? optimal / (v?.cost || 1) : optimal / (steps || 1);
-    optimalityScore = Math.max(0, Math.min(1, ratio));
-  }
+  else optimalityScore = Math.max(0, Math.min(1, optimal / (steps || 1)));
 
   return {
-    skin,
+    difficulty: board.difficulty || loadDifficulty(),
     mode: runMode,
-    source: body.mode === 'replay' ? 'replay' : body.mode === 'live' ? 'live' : (lastMode === 'replay' ? 'replay' : lastMode === 'live' ? 'live' : 'stub'),
-    model: body.model || null,
-    board: {
-      rows: board.R, cols: board.C,
-      difficulty: board.difficulty || board.size || null,
-      hash: boardHash(board),
-    },
     outcome: runOutcome,
-    reached,
     steps,
+    rings: board.R,
+    sectors: board.S,
+    boardHash: boardHash(board),
     optimalSteps: optimal,
-    cost: weighted ? (v ? v.cost : null) : null,
-    optimalCost: weighted ? optimal : null,
-    checksPassed: passed,
-    checksTotal: checks.length,
-    totalMs: game ? game.totalMs : (body._ms ?? 0),
     lastStepMs: game ? game.lastMs : (body._ms ?? 0),
-    calls: game ? game.calls.length : 1,
-    questions: game ? game.totalQuestions : (body._questions ?? 0),
-    costUsd: game ? game.totalCostUsd : (body._cost_usd ?? 0),
+    msPerStep: steps > 0 ? totalMs / steps : totalMs,
+    calls,
+    questions,
+    tokensIn,
+    tokensOut,
+    totalMs,
+    costUsd,
     optimalityScore,
     accuracyScore: checks.length ? passed / checks.length : null,
+    model: body.model || null,
   };
 }
 
-/** Send the record; never throws, never touches the play response. */
 function recordRun(opts) {
   const record = buildRunRecord(opts);
   if (!record) return;
@@ -521,7 +419,7 @@ function exportRun() {
   const a = document.createElement('a');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   a.href = URL.createObjectURL(blob);
-  a.download = `pathpuzzle-run-${lastMode || 'x'}-${stamp}.json`;
+  a.download = `chakravyuha-run-${lastMode || 'x'}-${stamp}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -529,21 +427,28 @@ function exportRun() {
 // ------------------------------------------------------------------- boot
 $('ask').addEventListener('click', ask);
 $('export-btn').addEventListener('click', exportRun);
-
-const savedSkin = (() => { try { return storage.getItem('jev.skin'); } catch { return null; } })();
-
-// initial health ping: is the shim up and does it hold an env key?
-fetch(`${BASE}api/health`).then((r) => r.json()).then((h) => {
-  if (h && h.ok) {
-    if (h.hasEnvKey) stubNote.textContent = 'Server holds an env key — requests without a browser key will go LIVE.';
-    else stubNote.textContent = 'No key set anywhere — answers will come from the local STUB solver unless you paste a key.';
-    refreshTransportUI();
-  }
-}).catch(() => {
-  stubNote.textContent = 'Server unreachable — the page cannot reach Jev at all.';
+$('cancel').addEventListener('click', () => {
+  currentSkin.animator?.cancel();
 });
 
 refreshKeyUI();
-refreshTransportUI();
 refreshModeUI();
-mountSkin(savedSkin === 'gmaps' ? 'gmaps' : 'grid');
+
+currentSkin.setInstant(loadInstant());
+currentSkin.setDifficulty(loadDifficulty());
+currentSkin.mount({ container: $('skin-controls') });
+$('board-caption').innerHTML = currentSkin.caption();
+setModeBadge('ready');
+
+fetch(`${BASE}api/health`).then((r) => r.json()).then((h) => {
+  const note = $('key-note');
+  if (h && h.ok) {
+    note.textContent = h.hasEnvKey
+      ? 'The server holds an env key, but BYOK still wins: the key you paste is used for your request.'
+      : 'No key set anywhere yet — press Ask Jev without a key and the server answers 401 no_key (BYOK).';
+    $('transport-chip').textContent = 'transport: proxy';
+  }
+}).catch(() => {
+  $('key-note').textContent = 'Server unreachable — the page cannot reach Jev at all.';
+  $('transport-chip').textContent = 'transport: proxy (down)';
+});

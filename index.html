@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>PathPuzzle — every move is a Jev decision</title>
+<title>Chakravyuha — every move is a Jev decision</title>
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
 <header class="top">
   <div class="brand">
     <span class="dot"></span>
-    <h1>PathPuzzle</h1>
-    <span class="tag">BYOK · two skins · every move is a Jev decision</span>
+    <h1>Chakravyuha</h1>
+    <span class="tag">BYOK · Abhimanyu vs the ring maze · every move is a Jev decision</span>
   </div>
   <div class="top-right">
     <a class="navlink" href="./history.html">History →</a>
@@ -22,7 +22,7 @@
 
 <main>
   <section class="board-wrap">
-    <canvas id="board" width="720" height="720" aria-label="puzzle board"></canvas>
+    <canvas id="board" width="720" height="720" aria-label="chakravyuha ring maze"></canvas>
     <div class="board-caption" id="board-caption"></div>
   </section>
 
@@ -35,31 +35,21 @@
       </div>
       <div class="keyrow">
         <label class="check"><input type="checkbox" id="remember-key" /> remember on this device (localStorage)</label>
-        <select id="transport" aria-label="transport">
-          <option value="proxy">transport: proxy (same-origin shim)</option>
-          <option value="direct">transport: direct (api.typesafe.ai — CORS-blocked today)</option>
-        </select>
       </div>
-      <div class="stub-note" id="stub-note">Checking…</div>
-      <div class="direct-note" id="direct-note" hidden></div>
-    </div>
-
-    <div class="skinbar" id="skin-bar">
-      <button class="skin-btn" data-skin="grid" type="button">Grid puzzle</button>
-      <button class="skin-btn" data-skin="gmaps" type="button">🗺️ Navigation</button>
-      <button class="skin-btn" data-skin="sim" type="button">🏙️ Sim city</button>
+      <div class="key-note" id="key-note">Checking the server…</div>
     </div>
 
     <div class="modebar" id="mode-bar">
       <button class="mode-btn" data-game-mode="policy" type="button">mode: policy · ask → apply → ask</button>
-      <button class="mode-btn" data-game-mode="plan" type="button">mode: plan · global ask</button>
+      <button class="mode-btn" data-game-mode="plan" type="button">mode: plan · one global ask</button>
     </div>
     <div class="mode-note" id="mode-note"></div>
 
     <div class="controls" id="skin-controls"></div>
 
     <div class="cta">
-      <button id="ask" class="primary" type="button">▶ Ask Jev for the path</button>
+      <button id="ask" class="primary" type="button">▶ Ask Jev for the next moves</button>
+      <button id="cancel" class="ghost" type="button" hidden>■ Stop</button>
       <button id="export-btn" class="ghost" type="button" disabled>⇩ Export run</button>
     </div>
 
@@ -80,11 +70,9 @@
       <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
     </div>
 
-    <div id="skin-result" class="block skin-result" hidden></div>
-
     <div class="block">
       <h2>What Jev returned <em>(typed)</em></h2>
-      <div id="answers" class="answers empty">Nothing yet. Press “Ask Jev”.</div>
+      <div id="answers" class="answers empty">Nothing yet. Pick a difficulty and press “Ask Jev”.</div>
     </div>
 
     <div class="block">
@@ -100,7 +88,7 @@
 </main>
 
 <footer>
-  <span>No pathfinding algorithm runs in this page. The board is serialised, sent to Jev, and the returned direction list is applied verbatim — the referee only verifies. The API key is yours; stub mode is the no-key default.</span>
+  <span>No pathfinding algorithm runs in this page. The maze is serialised, sent to Jev, and each move you see is the one Jev chose — animated hop by hop; the referee only verifies. The API key is yours. Without a key the server answers <code>401 no_key</code>.</span>
 </footer>
 
 <script type="module" src="./app.js"></script>
