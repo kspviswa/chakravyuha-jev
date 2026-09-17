@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This project displays map data and tiles from OpenStreetMap. The map data is
-© OpenStreetMap contributors, available under the Open Database License (ODbL);
-the tiles are subject to the OpenStreetMap Foundation tile usage policy.
-The OpenStreetMap attribution is displayed in the application.
