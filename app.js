@@ -201,6 +201,9 @@ async function askPolicy(key) {
   renderMeters(body, {
     calls: game.calls.length, lastMs: body._last_ms,
     optimal: v.optimal, steps: v.steps, qPerCall: game.lastQuestions,
+    totalMs: game.totalMs, questions: game.totalQuestions,
+    tokensIn: game.totalTokensIn, tokensOut: game.totalTokensOut,
+    costUsd: game.totalCostUsd,
   });
   setRunOutcome(game, v);
   recordRun({ game, v, body });
@@ -247,7 +250,12 @@ async function askPlan(key) {
   }
   currentSkin.render();
   renderReferee(v);
-  renderMeters(body, { calls: 1, lastMs: body._ms, optimal: v.optimal, steps: v.steps });
+  renderMeters(body, {
+    calls: 1, lastMs: body._ms, optimal: v.optimal, steps: v.steps,
+    totalMs: body._ms, questions: body._questions,
+    tokensIn: body.usage?.input_tokens, tokensOut: body.usage?.output_tokens,
+    costUsd: body._cost_usd,
+  });
   setRunOutcome({ outcome: v.reached ? 'reached' : 'stuck', moves, calls: [{ res: body }], maxSteps: null, reversals: 0, reached: v.reached }, v);
   recordRun({ mode: 'plan', body, v });
   return true;
@@ -297,15 +305,22 @@ function renderReferee(v) {
       : 'Jev did not take the shortest route.'}</div>`;
 }
 
+const fmt = (n, dp = 1) => (Number.isFinite(n) ? n.toFixed(dp) : '—');
+
 function renderMeters(body, extra = {}) {
   const lastMs = extra.lastMs ?? body._last_ms ?? body._ms;
   const totalMs = extra.totalMs ?? body._ms;
   const calls = extra.calls ?? body._calls ?? 1;
+  const questions = extra.questions ?? body._questions;
+  const costUsd = extra.costUsd ?? body._cost_usd;
+  const tokensIn = extra.tokensIn ?? body.usage?.input_tokens;
+  const tokensOut = extra.tokensOut ?? body.usage?.output_tokens;
+
   $('m-decision').textContent = `${lastMs ?? '?'} ms`;
   $('m-total').textContent = `${totalMs ?? '?'} ms`;
   $('m-calls').textContent = String(calls);
-  $('m-cost').textContent = body._cost_usd !== undefined ? `$${body._cost_usd.toFixed(6)}` : '—';
-  $('m-q').textContent = String(extra.qPerCall ?? body._questions ?? '—');
+  $('m-cost').textContent = Number.isFinite(costUsd) ? `$${costUsd.toFixed(6)}` : '—';
+  $('m-q').textContent = String(questions ?? '—');
   const optimal = extra.optimal;
   const steps = extra.steps;
   $('m-steps').textContent = optimal === null
@@ -313,6 +328,18 @@ function renderMeters(body, extra = {}) {
     : steps !== undefined
       ? `${steps} / ${optimal}`
       : (body._steps ?? '—');
+
+  // Efficiency: every figure divided by the steps actually taken. The step
+  // count is the honest denominator — a run that gives up early must not look
+  // cheap per step.
+  const n = Number.isFinite(steps) && steps > 0 ? steps : null;
+  $('m-msstep').textContent = n && Number.isFinite(totalMs) ? `${fmt(totalMs / n)} ms` : '—';
+  $('m-qstep').textContent = n && Number.isFinite(questions) ? fmt(questions / n, 2) : '—';
+  $('m-cstep').textContent = n ? fmt(calls / n, 2) : '—';
+  $('m-tstep').textContent = n && Number.isFinite(tokensIn) && Number.isFinite(tokensOut)
+    ? `${fmt(tokensIn / n, 0)} / ${fmt(tokensOut / n, 0)}`
+    : '—';
+  $('m-coststep').textContent = n && Number.isFinite(costUsd) ? `$${(costUsd / n).toFixed(6)}` : '—';
 }
 
 /** Honest outcome banner: reached / stuck / exhausted / error. */

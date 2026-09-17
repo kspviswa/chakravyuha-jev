@@ -50,9 +50,9 @@ test('subpath: the game page and every asset exist under /abhimanyu/', async () 
     const index = await fetch(`${base}/abhimanyu/`);
     assert.equal(index.status, 200);
     assert.match(index.headers.get('content-type'), /text\/html/);
-    assert.match(await index.text(), /<title>PathPuzzle/);
+    assert.match(await index.text(), /<title>Chakravyuha/);
 
-    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/lib/referee.js', '/abhimanyu/skins/gmaps.js', '/abhimanyu/history.html', '/abhimanyu/history.js']) {
+    for (const asset of ['/abhimanyu/app.js', '/abhimanyu/style.css', '/abhimanyu/lib/referee.js', '/abhimanyu/skins/chakravyuha.js', '/abhimanyu/history.html', '/abhimanyu/history.js']) {
       const r = await fetch(`${base}${asset}`);
       assert.equal(r.status, 200, asset);
     }
@@ -66,17 +66,17 @@ test('subpath: /abhimanyu/api/health reports the shim up', async () => {
   });
 });
 
-test('subpath: a stub round-trip answers through the prefixed /api/jev', async () => {
+test('subpath: a keyless request is refused through the prefixed /api/jev', async () => {
   await withPrefixed(null, async (base) => {
     const r = await fetch(`${base}/abhimanyu/api/jev`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(SMALL_PAYLOAD),
     });
-    assert.equal(r.status, 200);
+    assert.equal(r.status, 401);
     const body = await r.json();
-    assert.equal(body.mode, 'stub');
-    assert.deepEqual(Object.keys(body.answers).sort(), Object.keys(SMALL_PAYLOAD.questions).sort());
+    assert.equal(body.error.code, 'no_key');
+    assert.equal(body.answers, undefined, 'never answered locally, even under the prefix');
   });
 });
 

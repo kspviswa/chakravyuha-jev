@@ -1,17 +1,15 @@
 // test/server.test.mjs — http-level tests against a freshly booted shim on
-// an ephemeral port: smoke, BYOK header handling, static allowlist, stub
-// round-trips (unweighted + weighted), replay, hardening, and the live
-// branch against a mock upstream (no real key, no real network).
+// an ephemeral port: smoke, BYOK header handling, the static allowlist,
+// hardening, and the live branch against a mock upstream (no real key, no
+// real network). There is no stub and no replay mode any more: a keyless
+// request is a typed refusal, never an answer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
-  startServer, stopServer, postJev, FIXED_PAYLOAD, SMALL_PAYLOAD, NAV_PAYLOAD, startMockUpstream,
+  startServer, stopServer, postJev, CH_PAYLOAD, SMALL_PAYLOAD, startMockUpstream,
 } from './helpers.mjs';
-import { requestHash, RECORDED_DIR } from '../server.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,7 +25,7 @@ test('smoke: health, index, and 404 for a missing asset (no key set)', async () 
     const index = await fetch(`${ctx.base}/`);
     assert.equal(index.status, 200);
     assert.match(index.headers.get('content-type'), /text\/html/);
-    assert.match(await index.text(), /<title>PathPuzzle/);
+    assert.match(await index.text(), /<title>Chakravyuha/);
 
     const missing = await fetch(`${ctx.base}/definitely-not-here.svg`);
     assert.equal(missing.status, 404);
@@ -52,10 +50,10 @@ test('health reports hasEnvKey when a server-side key exists', async () => {
 test('the client tree is served, the server source is not', async () => {
   const ctx = await startServer({});
   try {
-    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/gmaps.js', '/history.html', '/history.js']) {
+    for (const asset of ['/app.js', '/style.css', '/lib/referee.js', '/skins/chakravyuha.js', '/history.html', '/history.js', '/assets/abhimanyu.jpg']) {
       const r = await fetch(`${ctx.base}${asset}`);
       assert.equal(r.status, 200, `${asset} served`);
-      assert.match(r.headers.get('content-type'), /javascript|css|html/, `${asset} MIME`);
+      assert.match(r.headers.get('content-type'), /javascript|css|html|image/, `${asset} MIME`);
     }
     for (const secret of ['/server.mjs', '/package.json', '/.git/config', '/fixtures/index.json', '/test/helpers.mjs', '/runs.jsonl']) {
       const r = await fetch(`${ctx.base}${secret}`);
@@ -77,75 +75,40 @@ test('unknown /api/ endpoint is a structured 404', async () => {
   }
 });
 
-// ---- stub round-trip -------------------------------------------------------
-test('stub round-trip (unweighted): one typed answer per question plus the meters', async () => {
+// ---- no key: a refusal, never an answer ------------------------------------
+test('no key: POST /api/jev is a 401 no_key with a typed, helpful error', async () => {
   const ctx = await startServer({});
   try {
-    const { status, body } = await postJev(ctx.base, FIXED_PAYLOAD);
-    assert.equal(status, 200);
-
-    const expectedTypes = {
-      reachable: 'noul',
-      path_length: 'choice',
-      maze_difficulty: 'score',
-      move_1: 'choice',
-      move_2: 'choice',
-    };
-    const qids = Object.keys(FIXED_PAYLOAD.questions).sort();
-    const aids = Object.keys(body.answers).sort();
-    assert.deepEqual(aids, qids, 'one answer per question, no extras, no gaps');
-
-    for (const id of qids) {
-      assert.equal(body.answers[id].type, expectedTypes[id], `type for ${id}`);
-    }
-    assert.equal(body.mode, 'stub');
-    assert.equal(body._stub, true);
-    assert.equal(typeof body._ms, 'number');
-    assert.ok(body._ms >= 0);
-    assert.equal(typeof body._cost_usd, 'number');
-    assert.ok(body._cost_usd >= 0);
-    assert.equal(body._questions, qids.length);
-    assert.equal(typeof body.usage?.input_tokens, 'number');
+    const { status, body } = await postJev(ctx.base, CH_PAYLOAD);
+    assert.equal(status, 401);
+    assert.equal(body.error?.code, 'no_key');
+    assert.ok(/BYOK/i.test(body.error.message), 'the message tells the user what to do');
   } finally {
     await stopServer(ctx);
   }
 });
 
-test('stub round-trip (weighted navigation): least-cost answers from Dijkstra', async () => {
+test('no key: the refusal carries no answers, no mode and no route', async () => {
   const ctx = await startServer({});
   try {
-    const { status, body } = await postJev(ctx.base, NAV_PAYLOAD);
-    assert.equal(status, 200);
-    assert.equal(body.mode, 'stub');
-    const types = {
-      reachable: 'noul',
-      cost_band: 'choice',
-      eta_band: 'choice',
-      route_difficulty: 'score',
-      move_1: 'choice',
-      move_2: 'choice',
-      move_3: 'choice',
-    };
-    for (const [id, type] of Object.entries(types)) {
-      assert.equal(body.answers[id]?.type, type, `type for ${id}`);
-      assert.ok(body.answers[id], `answered ${id}`);
-    }
-    // the stub's least-cost route must actually be least cost per the referee
-    const { shortestCost, walkPath } = await import('../lib/referee.js');
-    const board = {
-      R: 2, C: 3,
-      rows: NAV_PAYLOAD.state.grid,
-      weights: NAV_PAYLOAD.state.weights,
-      src: { r: NAV_PAYLOAD.state.source.row, c: NAV_PAYLOAD.state.source.col },
-      dst: { r: NAV_PAYLOAD.state.destination.row, c: NAV_PAYLOAD.state.destination.col },
-    };
-    const moves = Object.keys(body.answers).filter((k) => k.startsWith('move_'))
-      .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
-      .map((k) => body.answers[k].choice);
-    const opt = shortestCost(board);
-    const w = walkPath(board, moves);
-    assert.equal(w.reached, true);
-    assert.equal(w.cost, opt, 'stub move list is least-cost');
+    const { body } = await postJev(ctx.base, CH_PAYLOAD);
+    assert.equal(body.answers, undefined, 'never fabricates answers');
+    assert.equal(body.mode, undefined, 'never claims a mode');
+    assert.equal(body._stub, undefined);
+    assert.ok(!/optimal|shortest/.test(JSON.stringify(body)), 'no solution leaks in the error');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+test('no key: a well-formed payload is still refused, and the state is not the reason', async () => {
+  const ctx = await startServer({});
+  try {
+    // A perfectly valid polar state — the refusal is about the missing key.
+    const ok = await postJev(ctx.base, CH_PAYLOAD);
+    assert.equal(ok.status, 401);
+    const malformed = await postJev(ctx.base, { state: { task: 'nope' }, questions: {} });
+    assert.equal(malformed.status, 400, 'a bad payload is a different error');
   } finally {
     await stopServer(ctx);
   }
@@ -199,7 +162,8 @@ test('too many questions per request is a typed 400', async () => {
 });
 
 test('per-IP rate limit kicks in past RATE_LIMIT', async () => {
-  const ctx = await startServer({ rateLimit: 1 });
+  const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
+  const ctx = await startServer({ rateLimit: 1, apiKey: 'sk-env-key', upstream: `${upstream.base}/v1/systemone` });
   try {
     const first = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(first.status, 200);
@@ -208,56 +172,31 @@ test('per-IP rate limit kicks in past RATE_LIMIT', async () => {
     assert.equal(second.body.error?.code, 'rate_limited');
   } finally {
     await stopServer(ctx);
+    await upstream.close();
   }
 });
 
-// ---- replay ---------------------------------------------------------------
-function readFixtureEntry(name) {
-  const manifestPath = path.join(__dirname, '..', 'fixtures', 'index.json');
-  const idx = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const entry = idx[name];
-  const envelopeRaw = fs.readFileSync(path.join(__dirname, '..', entry.file), 'utf8');
-  return JSON.parse(envelopeRaw);
-}
-
-test('replay (hash mode): known requests are served from the recorded fixture', async () => {
-  const ctx = await startServer({ replay: '1' });
-  try {
-    for (const name of ['easy', 'hard']) {
-      const fixture = readFixtureEntry(name);
-      const { status, body } = await postJev(ctx.base, fixture.request);
-      assert.equal(status, 200, `${name} replay status`);
-      assert.equal(body.mode, 'replay');
-      assert.deepEqual(body.answers, fixture.response.answers, `${name} answers match recording`);
-    }
-  } finally {
-    await stopServer(ctx);
-  }
-});
-
-test('replay (named mode): TYPESAFE_REPLAY=easy serves the easy fixture whatever the request', async () => {
+// ---- there is no replay mode any more --------------------------------------
+test('no replay: the replay config knob and its error codes are gone', async () => {
   const ctx = await startServer({ replay: 'easy' });
   try {
-    const fixture = readFixtureEntry('easy');
+    // Even asked for a replay mode, the shim refuses without a key rather than
+    // serving anything recorded.
     const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
-    assert.equal(status, 200);
-    assert.equal(body.mode, 'replay');
-    assert.deepEqual(body.answers, fixture.response.answers);
-    const other = await postJev(ctx.base, FIXED_PAYLOAD);
-    assert.deepEqual(other.body.answers, fixture.response.answers);
+    assert.equal(status, 401);
+    assert.equal(body.error?.code, 'no_key');
+    assert.notEqual(body.mode, 'replay');
+    assert.equal(body.answers, undefined);
   } finally {
     await stopServer(ctx);
   }
 });
 
-test('replay (hash mode): an unknown request is a 404 no_fixture, not a crash', async () => {
+test('no replay: no fixture directory is read at boot', async () => {
   const ctx = await startServer({ replay: '1' });
   try {
-    const unique = crypto.randomBytes(8).toString('hex');
-    const payload = { ...SMALL_PAYLOAD, state: { ...SMALL_PAYLOAD.state, salt: unique } };
-    const { status, body } = await postJev(ctx.base, payload);
-    assert.equal(status, 404);
-    assert.equal(body.error?.code, 'no_fixture');
+    const { status } = await postJev(ctx.base, SMALL_PAYLOAD);
+    assert.equal(status, 401, 'no fixture lookup happens; it is a plain refusal');
   } finally {
     await stopServer(ctx);
   }
@@ -268,44 +207,29 @@ const MOCK_LIVE_BODY = {
   model: 'mock-jevv-9000',
   answers: {
     reachable: { type: 'noul', noul: 0.42 },
-    move_1: { type: 'choice', choice: 'right', probabilities: { right: 0.99 }, confidence: 0.99 },
-    path_length: { type: 'choice', choice: '1-5', probabilities: { '1-5': 0.8 }, confidence: 0.8 },
+    move_inward: { type: 'noul', noul: 0.99 },
+    route_length: { type: 'choice', choice: '1-5', probabilities: { '1-5': 0.8 }, confidence: 0.8 },
     maze_difficulty: { type: 'score', score: 1, probabilities: { '1': 0.6 }, confidence: 0.6 },
   },
   usage: { input_tokens: 1000, output_tokens: 7 },
 };
 
-function runLive(ctx, upstream) {
-  const hash = requestHash(SMALL_PAYLOAD);
-  // Each test server records into its own scratch directory (see
-  // test/helpers.mjs), so this path is private to this test.
-  const recordedFile = path.join(ctx.recordedDir, `${hash}.live.json`);
-  return { recordedFile, cleanup: () => { try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ } } };
-}
-
-test('live (env key): proxies to the upstream, meters and records the run', async () => {
+test('live (env key): proxies to the upstream and reports the meters', async () => {
   const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
   const ctx = await startServer({ apiKey: 'sk-env-key', upstream: `${upstream.base}/v1/systemone` });
-  const { recordedFile, cleanup } = runLive(ctx, upstream);
   try {
     const { status, body } = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(status, 200);
     assert.equal(body.mode, 'live');
     assert.deepEqual(body.answers, MOCK_LIVE_BODY.answers);
     assert.equal(body._questions, 4);
-    assert.equal(body._cost_usd, (1000 / 1e6) * 0.042);
-    assert.ok(!JSON.stringify(body).includes('sk-env-key'));
+    assert.equal(body._cost_usd, ((1000 + 7) / 1e6) * 0.042, 'blended rate over input AND output tokens');
+    assert.ok(!JSON.stringify(body).includes('sk-env-key'), 'BYOK: the key never comes back out');
 
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(upstream.lastRequest().auth, 'Bearer sk-env-key');
     assert.match(upstream.lastRequest().url, /^\/v1\/systemone/);
-
-    assert.ok(fs.existsSync(recordedFile), 'live response recorded');
-    const recorded = JSON.parse(fs.readFileSync(recordedFile, 'utf8'));
-    assert.ok(!JSON.stringify(recorded).includes('sk-env-key'));
-    assert.deepEqual(recorded.response.answers, MOCK_LIVE_BODY.answers);
   } finally {
-    cleanup();
     await stopServer(ctx);
     await upstream.close();
   }
@@ -378,13 +302,14 @@ test('live: an unreachable upstream is a typed 502, not a crash', async () => {
 });
 
 // ---- no pathfinding in the live path ---------------------------------------
-test('live: the stub never runs when any key is present', async () => {
+test('live: the answer is the upstream\'s, with no local marker of any kind', async () => {
   const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
   const ctx = await startServer({ upstream: `${upstream.base}/v1/systemone` });
   try {
     const { body } = await postJev(ctx.base, SMALL_PAYLOAD, { headers: { 'x-jev-key': 'sk-x' } });
     assert.equal(body.mode, 'live');
-    assert.equal(body._stub, undefined, 'live answers carry no _stub marker');
+    assert.equal(body._stub, undefined, 'there is no stub to mark');
+    assert.deepEqual(body.answers, MOCK_LIVE_BODY.answers, 'the upstream answers pass through verbatim');
   } finally {
     await stopServer(ctx);
     await upstream.close();

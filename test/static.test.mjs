@@ -2,8 +2,8 @@
 //   1. every src/href in index.html resolves to a real, served asset
 //   2. every asset under the client tree parses as an ES module (node --check)
 //   3. the game loop stays logic-free: app.js, lib/* (save referee.js) and
-//      skins/* carry NO pathfinding implementation; server.mjs keeps its
-//      offline stub solver confined to stubAnswer().
+//      skins/* carry NO pathfinding implementation, and server.mjs carries
+//      no solver at all — there is nothing left to hide behind a stub.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -77,7 +77,7 @@ test('every client .js parses as an ES module (node --check)', () => {
 
 test('history.html references only served assets and links back to the play page', () => {
   const html = fs.readFileSync(path.join(ROOT, 'history.html'), 'utf8');
-  assert.match(html, /<title>PathPuzzle/);
+  assert.match(html, /<title>Chakravyuha/);
   assert.match(html, /src=["']\.\/history\.js["']/, 'history.html loads history.js');
   assert.match(html, /href=["']\.\/style\.css["']/, 'history.html shares style.css');
   assert.match(html, /href=["']\.\/index\.html["']/, 'history.html links back to the play page');
@@ -172,106 +172,91 @@ const inRange = (idx, [a, b]) => idx >= a && idx <= b;
 test('invariant: the browser game loop carries no pathfinding implementation', () => {
   // referee.js is the designated home of the algorithms.
   const referee = fs.readFileSync(path.join(ROOT, 'lib', 'referee.js'), 'utf8');
-  assert.match(referee, /shortestPathLength/);
-  assert.match(referee, /shortestCost/);
+  assert.match(referee, /chakraShortest/, 'the polar BFS lives in the referee');
+  assert.match(referee, /walkChakra/, 'and so does the walker');
 
-  // app.js, lib/* (except referee.js) and skins/*: no pathfinding, not even
-  // the identifiers in a comment.
+  // app.js, the non-referee libs, the skin and the shim: no pathfinding, not
+  // even the identifiers in a comment.
   const loopFiles = [
     path.join(ROOT, 'app.js'),
+    path.join(ROOT, 'history.js'),
+    path.join(ROOT, 'server.mjs'),
     path.join(ROOT, 'lib', 'transport.js'),
     path.join(ROOT, 'lib', 'jev.js'),
-    path.join(ROOT, 'lib', 'board.js'),
-    path.join(ROOT, 'skins', 'grid.js'),
-    path.join(ROOT, 'skins', 'gmaps.js'),
+    path.join(ROOT, 'lib', 'chakra.js'),
+    path.join(ROOT, 'lib', 'animator.js'),
+    path.join(ROOT, 'lib', 'icons.js'),
+    path.join(ROOT, 'lib', 'stats.js'),
+    path.join(ROOT, 'skins', 'chakravyuha.js'),
   ];
   for (const file of loopFiles) {
     const src = fs.readFileSync(file, 'utf8');
     const rel = path.relative(ROOT, file);
-    assert.doesNotMatch(src, /shortestPath/i, `${rel}: raw source must not mention shortestPath`);
     assert.doesNotMatch(src, /astar/i, `${rel}: raw source must not mention astar`);
     assert.doesNotMatch(src, /\bbfs\b/i, `${rel}: no bfs, even in comments`);
     assert.doesNotMatch(src, /dijkstra/i, `${rel}: no dijkstra, even in comments`);
+    assert.doesNotMatch(src, /priorityqueue|minheap/i, `${rel}: no search data structures`);
   }
 
-  // skins may use the referee's verification helpers to DRAW the returned
-  // route (never to choose it) — assert that is the only referee import.
-  for (const file of [path.join(ROOT, 'skins', 'grid.js'), path.join(ROOT, 'skins', 'gmaps.js')]) {
+  // The loop must never ask the referee for a route: only the skin may import
+  // the referee, and only for the post-run verdict.
+  for (const file of [path.join(ROOT, 'app.js'), path.join(ROOT, 'history.js')]) {
     const src = fs.readFileSync(file, 'utf8');
-    const importLine = src.match(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/lib\/referee\.js'/);
-    assert.ok(importLine, `${file}: only imports recognised from the referee`);
-    const names = importLine[1];
-    for (const bad of ['shortestPath', 'shortestCost', 'boardQuality']) {
-      assert.ok(!names.includes(bad), `${file}: must not import the solver itself (${bad})`);
-    }
+    assert.doesNotMatch(src, /chakraShortest|chakraQuality/, `${path.basename(file)}: no route queries`);
   }
+  const skin = fs.readFileSync(path.join(ROOT, 'skins', 'chakravyuha.js'), 'utf8');
+  const importLine = skin.match(/import\s*\{([^}]*)\}\s*from\s*'\.\.\/lib\/referee\.js'/);
+  assert.ok(importLine, 'the skin imports the referee');
+  const names = importLine[1];
+  for (const bad of ['chakraShortest', 'chakraQuality', 'polarReachable']) {
+    assert.ok(!names.includes(bad), `the skin must not import the solver (${bad})`);
+  }
+  assert.ok(names.includes('chakraVerdict'), 'it imports only the verdict — verification');
 });
 
-test('invariant: server.mjs keeps the stub solver confined to stubAnswer()', () => {
+test('invariant: server.mjs carries no solver at all — there is no stub to hide one in', () => {
   const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
-  // In code (strings/comments stripped), no pathfinding symbols anywhere.
-  assert.doesNotMatch(stripLiterals(server), /shortestPath|astar|\bbfs\b|dijkstra/i,
-    'server.mjs: no pathfinding identifiers outside strings/comments');
 
-  const comments = commentRanges(server);
-  const defIdx = server.indexOf('function stubAnswer');
+  // No pathfinding symbols anywhere, in code or comments.
+  assert.doesNotMatch(server, /shortestPath|astar|\bbfs\b|dijkstra/i,
+    'server.mjs: no pathfinding identifiers at all');
+  assert.doesNotMatch(server, /stubAnswer/i, 'the stub solver is gone');
+  assert.doesNotMatch(server, /mode === 'stub'/i, 'and so is its branch');
 
-  // exactly one non-comment call site, and it lives inside a stub branch
-  const callSites = [...server.matchAll(/stubAnswer\(/g)]
-    .map((m) => m.index)
-    .filter((idx) => !inRange(idx, [defIdx, defIdx + 40]) && !comments.some((c) => inRange(idx, c)));
-  assert.equal(callSites.length, 1, 'exactly one stubAnswer call site (outside its definition)');
-
-  const guards = [...server.matchAll(/mode === 'stub'/g)];
-  assert.ok(guards.length >= 1, 'a stub-mode branch exists');
-  const openBrace = server.indexOf('{', guards[0].index + guards[0][0].length);
-  const closeBrace = matchingBrace(server, openBrace);
-  assert.ok(openBrace !== -1 && closeBrace !== -1, 'stub branch is brace-matched');
-  assert.ok(inRange(callSites[0], [openBrace, closeBrace]), 'stubAnswer is only reachable in stub mode');
-
-  // every bfs/dijkstra token is either inside stubAnswer's body or a comment
-  const bodyOpen = server.indexOf('{', defIdx + 'function stubAnswer'.length);
-  const bodyClose = matchingBrace(server, bodyOpen);
-  for (const re of [/\bbfs\b/gi, /dijkstra/gi]) {
-    for (const m of server.matchAll(re)) {
-      const ok = inRange(m.index, [bodyOpen, bodyClose]) || comments.some((c) => inRange(m.index, c));
-      assert.ok(ok, `pathfinding token at index ${m.index} must live in stubAnswer() or a comment`);
-    }
-  }
-
-  // the live branch exists and never calls the stub
+  // A keyless request is refused outright rather than answered locally.
+  assert.match(server, /NO_KEY/, 'the shim has a typed no-key error');
   assert.match(server, /Bearer \$\{key\}/, 'live forwards with the resolved key');
+
+  // The only place a maze is interpreted is the payload validator, which checks
+  // SHAPE — never a route.
+  assert.doesNotMatch(server, /optimalPath|chakraVerdict/, 'the shim never grades a run either');
 });
 
-test('docs: the README documents the stub, the CORS finding, and the shim', () => {
+test('docs: the README documents BYOK, the CORS finding, the shim and the chakravyuha', () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  assert.match(readme, /BFS|stub/i);
+  assert.match(readme, /BYOK/i);
   assert.match(readme, /CORS|Access-Control-Allow-Origin/i);
   assert.match(readme, /proxy|shim/i);
+  assert.match(readme, /chakravyuha/i);
+  assert.match(readme, /Lucide/i, 'the vendored icon set is credited');
+  assert.match(readme, /referee/i, 'and the verification-only referee is explained');
 });
-test('client: every run record carries a mode (regression — policy runs were silently rejected)', () => {
+
+test('client: every run record carries mode:live (regression — policy runs were silently rejected)', () => {
   const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const body = app.split('function buildRunRecord')[1].split('function recordRun')[0];
 
-  // buildRunRecord must default the mode to the UI's current mode, because the
-  // policy-mode call sites pass { game, v, body } and no mode. Without the
-  // fallback the server rejected every policy run with "field 'mode' must be a
-  // string" and, because recording is fire-and-forget, nothing was recorded and
-  // nothing complained.
-  assert.match(app, /const runMode = mode \|\| currentMode\(\)/,
-    'buildRunRecord defaults mode to currentMode()');
-  assert.match(app, /^\s*mode: runMode,/m,
-    'the record uses the defaulted mode, not the raw argument');
-  assert.ok(!/^\s*mode,\s*$/m.test(app.split('function buildRunRecord')[1].split('function recordRun')[0]),
-    'the record must not emit the raw (possibly undefined) mode');
-
-  // the policy call sites really do omit mode — if that changes, revisit the guard
-  const policyCalls = [...app.matchAll(/recordRun\(\{\s*game,[^}]*\}\)/g)];
-  assert.ok(policyCalls.length >= 1, 'policy-mode recordRun call sites exist');
-  for (const c of policyCalls) {
-    assert.ok(!/mode:/.test(c[0]), 'policy call sites omit mode (hence the fallback)');
-  }
+  // The app is LIVE-only now, so the record hardcodes the live mode. It must
+  // still emit it: without a mode the server rejects the whole record, and
+  // because recording is fire-and-forget, nothing is stored and nothing
+  // complains — exactly the silent loss this test was written for.
+  assert.match(app, /const runMode = 'live'/, 'buildRunRecord pins the mode to live');
+  assert.match(body, /^\s*mode: runMode,/m, 'the record emits the mode');
+  assert.ok(!/^\s*mode,\s*$/m.test(body), 'the record never emits a bare, possibly-undefined mode');
+  assert.ok(!/currentMode\(\)/.test(body), 'the mode no longer depends on a UI toggle');
 
   // and the server must still require it, or the guard above proves nothing
   const server = fs.readFileSync(path.join(ROOT, 'server.mjs'), 'utf8');
   assert.match(server, /needEnum\(src, 'mode', RUN_MODES\)/, "the server requires 'mode'");
+  assert.match(server, /RUN_MODES = \['live'\]/, 'and the only accepted mode is live');
 });

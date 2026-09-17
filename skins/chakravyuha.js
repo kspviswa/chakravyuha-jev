@@ -15,7 +15,7 @@ import {
 } from '../lib/chakra.js';
 import { chakraVerdict } from '../lib/referee.js';
 import { Animator } from '../lib/animator.js';
-import { drawTargetIcon } from '../lib/icons.js';
+import { drawTargetIcon, drawCrownIcon, drawSparklesIcon, drawSwordsIcon } from '../lib/icons.js';
 
 const MAX_LOGICAL = 720;
 const STEPS_PER_HOP = 180; // ms of tween per hop
@@ -82,10 +82,22 @@ export const chakraSkin = {
       duration: STEPS_PER_HOP,
       onFrame: (f) => {
         this.pos = f.pos;
+        this.dir = f.dir ?? null;
+        this.progress = f.progress ?? 1;
         this._draw();
       },
     });
     this.animator._S = 0;
+    this.dir = null;
+    this.progress = 1;
+    this._burstAt = 0;
+
+    // Determinism: reduced-motion users and the headless harness (?anim=0) snap
+    // between cells instead of tweening.
+    const reduced = typeof matchMedia !== 'undefined'
+      && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const noAnim = typeof location !== 'undefined' && /[?&]anim=0(?:&|$)/.test(location.search);
+    if (reduced || noAnim) this.setAnimationDuration(0);
 
     this.portrait = new Image();
     this.portrait.src = './assets/abhimanyu.jpg';
@@ -98,6 +110,21 @@ export const chakraSkin = {
   setInstant(v) {
     this.instant = !!v;
     if (this.animator) this.animator.instant = this.instant;
+  },
+
+  /**
+   * 0 → snap between cells (no tween, no burst). Used by prefers-reduced-motion
+   * and the ?anim=0 test hook so the harness is deterministic.
+   */
+  setAnimationDuration(ms) {
+    const d = Math.max(0, Number(ms) || 0);
+    this.animDuration = d;
+    if (!this.animator) return;
+    this.animator.duration = d;
+    if (d === 0) {
+      this.animator.instant = true;
+      this._burstAt = 0;
+    }
   },
 
   setDifficulty(diffKey) {
@@ -136,6 +163,10 @@ export const chakraSkin = {
 
   check(moves) {
     this.verdict = chakraVerdict(this.board, moves);
+    if (this.verdict && this.verdict.reached) {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      this._burstAt = now;
+    }
     return this.verdict;
   },
 
@@ -245,13 +276,18 @@ export const chakraSkin = {
       }
     }
 
-    // warriors: impassable dots
-    ctx.fillStyle = COL.warrior;
+    // warriors: impassable dots (a swords glyph inside, when the dot is big)
+    const wR = Math.max(3, 0.16 * unit);
     for (const w of b.warriors) {
       const p = this._cellPos(w.ring, w.sector);
+      ctx.fillStyle = COL.warrior;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, Math.max(3, 0.16 * unit), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, wR, 0, Math.PI * 2);
       ctx.fill();
+      if (wR >= 11) {
+        ctx.strokeStyle = 'rgba(24,10,10,0.85)';
+        drawSwordsIcon(ctx, p.x, p.y, wR * 1.5, Math.max(1, wR * 0.16));
+      }
     }
 
     // trail of visited cells (drawn faintly behind the moving token)
@@ -272,46 +308,103 @@ export const chakraSkin = {
       ctx.globalAlpha = 1;
     }
 
-    // the goal: a Lucide 'target'
+    // the goal: a Lucide 'target' at the centre
+    ctx.strokeStyle = COL.target;
+    ctx.fillStyle = COL.target;
     drawTargetIcon(ctx, mid, mid, Math.max(8, 0.32 * unit), Math.max(2, 2.5 * this.dpr));
 
-    // Abhimanyu's portrait, resting on one side of the maze
-    if (this.portrait.complete && this.portrait.naturalWidth > 0) {
-      const size = Math.max(44, 0.16 * width);
-      const x = width - size - 0.05 * width;
-      const y = 0.05 * width;
-      ctx.strokeStyle = COL.line;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
-      ctx.save();
-      ctx.clip();
-      ctx.drawImage(this.portrait, x, y, size, size);
-      ctx.restore();
-      ctx.stroke();
-      ctx.fillStyle = COL.dim;
-      ctx.font = `${Math.max(9, 0.014 * width)}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('Abhimanyu', x + size / 2, y + size + 10);
-      ctx.textAlign = 'left';
-    }
+    // Abhimanyu himself — the moving sprite, drawn at his interpolated polar
+    // position so a hop visibly travels ring by ring.
+    this._drawAbhimanyu(ctx, this.pos, unit);
 
-    // the moving token (interpolated polar position during a hop)
-    const pos = this.pos;
-    const p = this._cellPos(pos.ring, pos.sector);
-    ctx.fillStyle = COL.token;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.max(3, 0.12 * unit), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = COL.token;
-    ctx.lineWidth = Math.max(1.5, 2 * this.dpr);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.max(6, 0.2 * unit), 0, Math.PI * 2);
-    ctx.stroke();
+    // arrival burst: a one-shot sparkles flare on the target, only when the
+    // run has genuinely finished at the centre.
+    this._drawBurst(ctx, mid, unit);
 
     // referee overlay — only after the run finished (verdict cached by check())
     this._drawOverlay(ctx, width, unit);
     this._publishHook();
+  },
+
+  /**
+   * The sprite: Abhimanyu's artwork, circular-clipped, at his interpolated
+   * position. A lead-in scale pulse makes the hop read as movement, a subtle
+   * tilt faces the direction of travel, and a soft shadow follows him.
+   */
+  _drawAbhimanyu(ctx, pos, unit) {
+    const p = this._cellPos(pos.ring, pos.sector);
+    const r = Math.max(9, 0.42 * unit);
+    const moving = !!(this.animator && this.animator.running);
+    const pr = moving ? Math.min(1, Math.max(0, this.progress ?? 1)) : 1;
+    const pulse = 1 + 0.06 * Math.sin(Math.PI * pr); // 1.00 → 1.06 → 1.00
+    const size = r * 2 * pulse;
+    const half = size / 2;
+    const tilt = this.dir === 'clockwise' ? 0.30
+      : this.dir === 'counterclockwise' ? -0.30
+        : 0;
+
+    // soft drop shadow that travels with him
+    ctx.save();
+    ctx.globalAlpha = 0.32;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + half * 0.62, half * 0.62, half * 0.24, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(tilt);
+
+    // halo ring
+    ctx.beginPath();
+    ctx.arc(0, 0, half + Math.max(1.5, 0.035 * unit), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(14,17,24,0.92)';
+    ctx.fill();
+    ctx.strokeStyle = COL.token;
+    ctx.lineWidth = Math.max(1.5, 2 * this.dpr);
+    ctx.stroke();
+
+    if (this.portrait.complete && this.portrait.naturalWidth > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(0, 0, half, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(this.portrait, -half, -half, size, size);
+      ctx.restore();
+    } else {
+      // fallback when the artwork has not loaded: a crown token
+      ctx.fillStyle = COL.token;
+      ctx.beginPath();
+      ctx.arc(0, 0, half * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // the crown badge
+    ctx.strokeStyle = '#fbbf24';
+    ctx.fillStyle = '#fbbf24';
+    drawCrownIcon(ctx, 0, -half - Math.max(4, 0.11 * unit), Math.max(6, 0.22 * unit), Math.max(1, 1.7 * this.dpr));
+    ctx.restore();
+  },
+
+  /** One-shot arrival flare on the target, driven by wall-clock time. */
+  _drawBurst(ctx, mid, unit) {
+    if (!this._burstAt) return;
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const t = (now - this._burstAt) / 900;
+    if (t >= 1) { this._burstAt = 0; return; }
+    const grow = 0.6 + 1.5 * t;
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = COL.target;
+    ctx.fillStyle = COL.target;
+    drawSparklesIcon(ctx, mid, mid, Math.max(10, unit * grow * 2.4), Math.max(1.5, 2 * this.dpr));
+    ctx.restore();
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => this._draw());
+    } else {
+      this._burstAt = 0;
+    }
   },
 
   _drawOverlay(ctx, width, unit) {
@@ -344,7 +437,7 @@ export const chakraSkin = {
   _publishHook() {
     if (typeof window === 'undefined') return;
     const b = this.board;
-    window.__chakraLastRender = {
+    const snap = {
       rings: b.R,
       sectors: b.S,
       warriors: b.warriors,
@@ -354,5 +447,28 @@ export const chakraSkin = {
       difficulty: this.difficulty || 'easy',
       verdict: this.verdict ? { reached: this.verdict.reached, steps: this.verdict.steps, optimal: this.verdict.optimal } : null,
     };
+    window.__chakraLastRender = snap;
+
+    // live status line beside the maze (the Abhimanyu panel)
+    const el = typeof document !== 'undefined' && document.getElementById('abhi-status');
+    if (el) {
+      const steps = Math.max(0, this.trail.length - 1);
+      const where = this.pos.ring === 0 ? 'at the centre' : `ring ${this.pos.ring}, sector ${this.pos.sector}`;
+      const v = this.verdict;
+      const outcome = v
+        ? (v.reached ? 'reached the centre ✓' : 'did not reach the centre')
+        : null;
+      el.innerHTML =
+        `<span class="k">${escapeText(where)}</span>` +
+        `<span class="k">${steps} step${steps === 1 ? '' : 's'}</span>` +
+        `<span class="k">${b.warriors.length} warriors avoided</span>` +
+        (outcome ? `<span class="k ${v.reached ? 'good' : 'bad'}">${outcome}</span>` : '');
+    }
   }
 };
+
+function escapeText(s) {
+  return String(s).replace(/[&<>"']/g, (m) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
+  ));
+}

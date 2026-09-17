@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startServer, stopServer, postJev, FIXED_PAYLOAD } from './helpers.mjs';
+import { startServer, stopServer, postJev, CH_PAYLOAD, startMockUpstream } from './helpers.mjs';
 import { RUNS_CAP, normaliseRunRecord, createServer } from '../server.mjs';
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
@@ -18,23 +18,22 @@ const ROOT = path.join(__dirname, '..');
 const scratchFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-runs-')), 'runs.jsonl');
 
 const VALID_RUN = {
-  skin: 'grid',
-  mode: 'policy',
-  source: 'stub',
-  model: 'STUB-LOCAL-SOLVER',
-  board: { rows: 12, cols: 12, difficulty: 'medium', hash: '1a2b3c' },
+  difficulty: 'medium',
+  mode: 'live',
+  model: 'jev-latest',
+  rings: 6,
+  sectors: 16,
+  boardHash: '1a2b3c',
   outcome: 'reached',
-  reached: true,
   steps: 22,
   optimalSteps: 22,
-  cost: null,
-  optimalCost: null,
-  checksPassed: 4,
-  checksTotal: 4,
   totalMs: 810,
   lastStepMs: 41,
+  msPerStep: 36.8,
   calls: 22,
   questions: 2,
+  tokensIn: 2400,
+  tokensOut: 480,
   costUsd: 0.000478,
   optimalityScore: 1,
   accuracyScore: 1,
@@ -66,11 +65,11 @@ test('POST → GET → DELETE round trip over a scratch runs file', async () => 
     assert.equal(a.status, 201);
     assert.ok(a.body.id, 'server stamps an id');
     assert.match(a.body.at, /^\d{4}-\d{2}-\d{2}T/, 'server stamps an ISO at');
-    assert.equal(a.body.skin, 'grid');
+    assert.equal(a.body.difficulty, 'medium');
     assert.equal(a.body.steps, 22);
     assert.equal(a.body.id, JSON.parse(fs.readFileSync(file, 'utf8').trim()).id, 'the stored line carries the same record');
 
-    const b = await postRun(ctx.base, { ...VALID_RUN, skin: 'gmaps', steps: 7 });
+    const b = await postRun(ctx.base, { ...VALID_RUN, difficulty: 'hard', steps: 7 });
     assert.equal(b.status, 201);
 
     const g = await getRuns(ctx.base);
@@ -119,9 +118,9 @@ test('validation rejects junk with the typed error shape', async () => {
     assert.equal(badJson.status, 400);
     assert.equal(badJson.body.error.code, 'bad_request');
 
-    const badSkin = await postRun(ctx.base, { ...VALID_RUN, skin: 'maze' });
-    assert.equal(badSkin.status, 400);
-    assert.equal(badSkin.body.error.code, 'bad_request');
+    const badDifficulty = await postRun(ctx.base, { ...VALID_RUN, difficulty: 'impossible' });
+    assert.equal(badDifficulty.status, 400);
+    assert.equal(badDifficulty.body.error.code, 'bad_request');
 
     const nanSteps = await postRun(ctx.base, { ...VALID_RUN, steps: '22' });
     assert.equal(nanSteps.status, 400);
@@ -175,7 +174,7 @@ test('a record containing apiKey / x-jev-key is stored WITHOUT them', async () =
     assert.ok(!serialized.includes('sk-xjev-999'), 'x-jev-key dropped');
     assert.ok(!serialized.includes('t0k3n'), 'authToken dropped');
     assert.ok(!serialized.includes('"token"'), 'token dropped');
-    assert.equal(body.skin, 'grid', 'the legitimate fields survived');
+    assert.equal(body.difficulty, 'medium', 'the legitimate fields survived');
     // and the same holds for bytes on disk
     const onDisk = fs.readFileSync(ctx.runsFile, 'utf8');
     assert.ok(!onDisk.includes('sk-super-secret-abc'));
@@ -249,7 +248,7 @@ test('the history survives a server restart (same runs file)', async () => {
   const ctx1 = await startServer({ runsFile: file });
   try {
     await postRun(ctx1.base, VALID_RUN);
-    await postRun(ctx1.base, { ...VALID_RUN, skin: 'gmaps' });
+    await postRun(ctx1.base, { ...VALID_RUN, difficulty: 'hard' });
   } finally {
     await stopServer(ctx1);
   }
@@ -257,7 +256,7 @@ test('the history survives a server restart (same runs file)', async () => {
   try {
     const g = await getRuns(ctx2.base);
     assert.equal(g.body.count, 2);
-    assert.deepEqual(g.body.runs.map((r) => r.skin).sort(), ['gmaps', 'grid']);
+    assert.deepEqual(g.body.runs.map((r) => r.difficulty).sort(), ['hard', 'medium']);
   } finally {
     await stopServer(ctx2);
   }
@@ -289,16 +288,17 @@ test('/api/runs respects the body-size cap (typed 413)', async () => {
 });
 
 test('recording runs does NOT alter the play flow response', async () => {
-  const ctx = await startServer({ runsFile: scratchFile() });
+  const upstream = await startMockUpstream({ status: 200, body: { answers: { move_inward: { type: 'noul', noul: 1 } }, usage: { input_tokens: 10, output_tokens: 2 } } });
+  const ctx = await startServer({ runsFile: scratchFile(), apiKey: 'sk-env-key', upstream: `${upstream.base}/v1/systemone` });
   try {
-    const before = await postJev(ctx.base, FIXED_PAYLOAD);
+    const before = await postJev(ctx.base, CH_PAYLOAD);
     assert.equal(before.status, 200);
 
     for (let i = 0; i < 3; i++) await postRun(ctx.base, { ...VALID_RUN, steps: i + 1 });
     const records = await getRuns(ctx.base);
     assert.equal(records.body.count, 3);
 
-    const after = await postJev(ctx.base, FIXED_PAYLOAD);
+    const after = await postJev(ctx.base, CH_PAYLOAD);
     assert.equal(after.status, 200);
     // _ms is wall-clock noise; everything else in the play response is
     // deterministic and must be byte-identical whether or not runs were recorded.
@@ -306,6 +306,7 @@ test('recording runs does NOT alter the play flow response', async () => {
     assert.deepEqual(stable(after.body), stable(before.body), 'the jev response is unchanged');
   } finally {
     await stopServer(ctx);
+    await upstream.close();
   }
 });
 test('createServer({}) still serves /api/runs (regression: a partial config left runsFile undefined)', async () => {
@@ -333,8 +334,8 @@ test('createServer({}) still serves /api/runs (regression: a partial config left
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        skin: 'grid', mode: 'policy', source: 'stub', outcome: 'reached',
-        reached: true, steps: 22, totalMs: 20,
+        difficulty: 'easy', mode: 'live', outcome: 'reached',
+        steps: 22, rings: 4, sectors: 12, totalMs: 20,
       }),
     });
     assert.equal(p.status, 201, 'POST /api/runs must not 500 on a partial config');
