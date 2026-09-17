@@ -173,6 +173,43 @@ const RENDER_PROBE = `(() => {
   };
 })()`;
 
+/**
+ * Read the canvas back and count pixels of the app's palette. This proves the
+ * maze is *drawn*, not merely that some state variable moved — the difference
+ * between "the model updated" and "the user can see Abhimanyu".
+ */
+const PIXEL_PROBE = `(() => {
+  const c = document.getElementById('board');
+  const ctx = c.getContext('2d');
+  const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+  const want = {
+    token:  [0xa7, 0x8b, 0xfa],  // Abhimanyu
+    target: [0x4a, 0xde, 0x80],  // the goal icon
+    warrior:[0xf8, 0x71, 0x71],  // warrior dots
+    trail:  [0x38, 0xbd, 0xf8],  // the trail ribbon
+    crown:  [0xfb, 0xbf, 0x24],  // the crown badge
+  };
+  const counts = { token: 0, target: 0, warrior: 0, trail: 0, crown: 0, nonBg: 0 };
+  const near = (i, c3, tol) => Math.abs(data[i] - c3[0]) <= tol
+    && Math.abs(data[i + 1] - c3[1]) <= tol
+    && Math.abs(data[i + 2] - c3[2]) <= tol;
+  for (let i = 0; i < data.length; i += 4) {
+    const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+    if (Math.abs(r - 0x0e) > 12 || Math.abs(g - 0x11) > 12 || Math.abs(b - 0x18) > 12) counts.nonBg++;
+    for (const [k, c3] of Object.entries(want)) if (near(i, c3, 26)) counts[k]++;
+  }
+  // Where is the token centroid? It must sit inside the maze, not in a corner.
+  let sx = 0, sy = 0, n = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (near(i, want.token, 26)) { sx += x; sy += y; n++; }
+    }
+  }
+  return { ...counts, width, height, tokenCentroid: n ? { x: sx / n, y: sy / n, n } : null };
+})()`;
+
+
 async function runViewport(cdp, base, vp, route) {
   console.log(`\n== ${route.name} @ ${vp.name} (${vp.width}×${vp.height}, dpr ${vp.dpr})`);
   await cdp.send('Emulation.setDeviceMetricsOverride', {
@@ -263,6 +300,31 @@ async function runViewport(cdp, base, vp, route) {
   }
   if (route.name === 'root') await shot(cdp, `anim-midtween-${vp.name}`);
   console.log(`  mid-tween captured: ring ${midTween.pos.ring.toFixed(3)}, sector ${midTween.pos.sector.toFixed(3)}: ok`);
+
+  // ---- the pixels prove it: Abhimanyu, the target, warriors, the crown -----
+  const px = await evaluate(cdp, PIXEL_PROBE);
+  if (!(px.token > 80)) throw new Error(`Abhimanyu is not drawn (${px.token} token pixels)`);
+  if (!(px.target > 30)) throw new Error(`the target icon is not drawn at the centre (${px.target} px)`);
+  if (!(px.warrior > 30)) throw new Error(`the warrior dots are not drawn (${px.warrior} px)`);
+  if (!(px.crown > 8)) throw new Error(`Abhimanyu's crown badge is missing (${px.crown} px)`);
+  if (!px.tokenCentroid) throw new Error('no token centroid — the sprite has no visible pixels');
+  // Abhimanyu starts on (and mostly walks) the OUTER rings, so he is expected
+  // to sit well away from the centre. What must hold is that he is inside the
+  // drawn maze: on-canvas, and no further out than the outer ring plus his own
+  // radius (the outer ring centre sits at 0.875 × the half-width for R=4).
+  const cx = px.tokenCentroid.x, cy = px.tokenCentroid.y;
+  const mid = px.width / 2;
+  const dist = Math.hypot(cx - mid, cy - mid);
+  if (dist > mid) {
+    throw new Error(`the sprite is outside the maze disc (centroid ${cx.toFixed(0)},${cy.toFixed(0)} `
+      + `= ${dist.toFixed(0)}px from centre, half-width ${mid.toFixed(0)})`);
+  }
+  const margin = px.width * 0.02;
+  if (cx < margin || cy < margin || cx > px.width - margin || cy > px.height - margin) {
+    throw new Error(`the sprite is against/over the canvas edge (${cx.toFixed(0)},${cy.toFixed(0)})`);
+  }
+  console.log(`  pixels: ${px.token} sprite · ${px.target} target · ${px.warrior} warrior · ${px.crown} crown; `
+    + `centroid ${cx.toFixed(0)},${cy.toFixed(0)} (${(dist / mid).toFixed(2)} of half-width): ok`);
 
   // let the run finish
   const done = await evalCond(cdp, `(() => {
