@@ -239,7 +239,8 @@ export const gmapsSkin = {
       }
       const geo = await r.json();
       this.applyGeo(geo);
-      this.setStatus(SOURCE_LABEL[geo.source] || `source: ${geo.source}`,
+      const src = SOURCE_LABEL[geo.source] || `source: ${geo.source}`;
+      this.setStatus(`${src} — press “▶ Ask Jev for the path” when ready`,
         geo.source === 'snapshot' ? 'snap' : 'ok');
     } catch (e) {
       this.geo = null;
@@ -260,7 +261,15 @@ export const gmapsSkin = {
     this.route = [];
     this.dead = false;
     this.draw();
-    if (this.autoAsk) this.autoAsk();
+    // NOTE: deliberately NO auto-ask here. This used to call this.autoAsk() on
+    // every applyGeo — including the initial mount — which meant loading the
+    // navigation skin immediately ran ask(). With no key that silently drew the
+    // LOCAL STUB solver's route, so a path appeared before the user had pasted
+    // anything; with a key it spent the user's credits without them pressing
+    // the button. The other two skins only auto-ask on an explicit control
+    // change, never on mount. Solving is now an explicit action: press
+    // "Ask Jev for the path". Changing a preset clears the old route above, so
+    // a stale path is never left on a newly loaded map.
   },
 
   begin() {

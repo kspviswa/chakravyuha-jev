@@ -129,18 +129,30 @@ async function runViewport(cdp, base, vp, route) {
   const clickInfo = await cdp.send('Runtime.evaluate', {
     expression: `(async () => {
       const askDisabled = document.getElementById('ask').disabled;
+      // Capture the referee/answers/mode BEFORE the switch. The grid skin ran
+      // earlier in this harness, so these hold its result; the nav skin must not
+      // CHANGE them on mount (that would mean it solved something by itself).
+      const snap = () => ({
+        ref: (document.getElementById('referee') || {}).innerText || '',
+        ans: (document.getElementById('answers') || {}).innerText || '',
+        mode: (document.getElementById('mode') || {}).textContent || '',
+        calls: (document.getElementById('m-calls') || {}).textContent || '',
+      });
+      const before = snap();
       document.querySelector('[data-skin="gmaps"]').click();
 await new Promise((r) => setTimeout(r, 50));
       return {
         beforeAskDisabled: askDisabled,
         active: [...document.querySelectorAll('.skin-btn')].find((b) => b.classList.contains('active'))?.dataset.skin || null,
         jevSkin: localStorage.getItem('jev.skin'),
+        before,
       };
     })()`,
     awaitPromise: true,
     returnByValue: true,
   });
   console.log('  gmaps click:', JSON.stringify(clickInfo.result?.value));
+  const beforeSwitch = clickInfo.result?.value?.before || {};
   try {
     // The real-map skin mounts a route-preset select (#geo-pair); the stylised
     // sim skin mounts #map-size. Wait for the nav skin's own marker.
@@ -165,6 +177,33 @@ await new Promise((r) => setTimeout(r, 50));
   if (!g.preset) throw new Error('gmaps skin is missing the real-place route presets');
   if (!g.canvas) throw new Error('gmaps skin canvas has no size');
   console.log('  gmaps real map: attribution + real presets + canvas: ok');
+
+  // Regression guard: loading the navigation skin must NOT solve anything on
+  // its own. It used to call autoAsk() from applyGeo() on mount, so with no key
+  // the LOCAL STUB solver silently drew a route before the user had pasted
+  // anything. Nothing may be solved until the button is pressed — so the
+  // referee/answers/mode must be UNCHANGED from before the switch.
+  const idle = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const note = document.querySelector('.geo-status');
+      return {
+        ref: (document.getElementById('referee') || {}).innerText || '',
+        ans: (document.getElementById('answers') || {}).innerText || '',
+        mode: (document.getElementById('mode') || {}).textContent || '',
+        calls: (document.getElementById('m-calls') || {}).textContent || '',
+        status: note ? note.innerText : '',
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const i = idle.result?.value || {};
+  if (i.ref !== beforeSwitch.ref) throw new Error('gmaps skin changed the referee on load — it solved something without "Ask Jev"');
+  if (i.ans !== beforeSwitch.ans) throw new Error('gmaps skin changed the answers on load — it solved something without "Ask Jev"');
+  if (i.calls !== beforeSwitch.calls) throw new Error('gmaps skin made a call on load — it solved something without "Ask Jev"');
+  if (i.mode !== beforeSwitch.mode) throw new Error(`gmaps skin changed the mode badge on load ("${beforeSwitch.mode}" → "${i.mode}") — it solved something without "Ask Jev"`);
+  if (!/Ask Jev/.test(i.status)) throw new Error('gmaps status should prompt the user to press "Ask Jev for the path"');
+  console.log('  gmaps idle on load: no route, no stub, no call, prompts for Ask: ok');
+
   await cdp.send('Runtime.evaluate', { expression: `document.getElementById('ask').click()` });
   const nav = await evalCond(cdp, `(() => {
     const r = document.getElementById('referee');
