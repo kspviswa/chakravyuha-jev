@@ -12,7 +12,7 @@
 // Game-loop rule unchanged: this skin serialises the geo board, sends it to
 // Jev, and draws the returned moves (lib/referee.js checks, never chooses).
 
-import { PLACE_PAIRS, ATTRIBUTION, boardFromGeo, cellCenter } from '../lib/geo.js';
+import { PLACE_PAIRS, ATTRIBUTION, boardFromGeo, cellCenter, routeGeometry } from '../lib/geo.js';
 import { buildNavQuestions, answerMoves } from '../lib/jev.js';
 import { verdictWeighted } from '../lib/referee.js';
 import { deriveBase } from '../lib/transport.js';
@@ -99,6 +99,7 @@ export const gmapsSkin = {
     this.geo = null;
     this.board = null;
     this.route = [];
+    this.routePts = null;
     this.cost = 0;
     this.animating = false;
     this.progress = 0;
@@ -259,6 +260,7 @@ export const gmapsSkin = {
     this.board = boardFromGeo(geo);
     this.notes = geo.notes || [];
     this.route = [];
+    this.routePts = null;
     this.dead = false;
     this.draw();
     // NOTE: deliberately NO auto-ask here. This used to call this.autoAsk() on
@@ -274,6 +276,7 @@ export const gmapsSkin = {
 
   begin() {
     this.route = [];
+    this.routePts = null;
     this.cost = 0;
     this.progress = 0;
     if (this.board) this.draw();
@@ -445,27 +448,59 @@ export const gmapsSkin = {
   },
 
   drawRoute(ctx, T, progress) {
-    const pts = this.route;
-    if (pts.length < 2 || !progress || progress <= 0) return;
-    const n = Math.max(1, Math.round((pts.length - 1) * Math.min(1, progress)));
-    const drawn = pts.slice(0, n + 1);
-    const xy = (p) => {
-      const cc = cellCenter(this.geo.bbox, this.geo.rows, this.geo.cols, p.r, p.c);
-      return [T.sx(cc.lon), T.sy(cc.lat)];
-    };
+    if (!progress || progress <= 0) return;
+    // Prefer the REAL-ROAD polyline computed in render(); fall back to cell
+    // centres only when there is no geometry (e.g. the simulated city).
+    let geoPts = this.routePts;
+    if (!geoPts || geoPts.length < 2) {
+      if (!this.route || this.route.length < 2) return;
+      geoPts = this.route.map((p) => {
+        const cc = cellCenter(this.geo.bbox, this.geo.rows, this.geo.cols, p.r, p.c);
+        return [cc.lat, cc.lon];
+      });
+    }
+    const xy = geoPts.map(([lat, lon]) => [T.sx(lon), T.sy(lat)]);
+
+    // Draw only the first `progress` of the route's on-screen length, so the
+    // animation advances along the road rather than cell by cell.
+    const seg = [];
+    let total = 0;
+    for (let i = 1; i < xy.length; i++) {
+      const d = Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]);
+      seg.push(d);
+      total += d;
+    }
+    const want = total * Math.min(1, progress);
+    const drawn = [xy[0]];
+    let run = 0;
+    for (let i = 1; i < xy.length; i++) {
+      if (run + seg[i - 1] <= want) {
+        drawn.push(xy[i]);
+        run += seg[i - 1];
+      } else {
+        const t = seg[i - 1] > 0 ? (want - run) / seg[i - 1] : 0;
+        drawn.push([
+          xy[i - 1][0] + (xy[i][0] - xy[i - 1][0]) * t,
+          xy[i - 1][1] + (xy[i][1] - xy[i - 1][1]) * t,
+        ]);
+        break;
+      }
+    }
+    if (drawn.length < 2) return;
+
+    // Fixed screen widths — a Google-Maps-style road line, NOT scaled by the
+    // tile size. (The old code used tileSize*0.32, i.e. 256px*0.32 ≈ 82px.)
     const line = (color, width) => {
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
-      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      drawn.forEach((p, i) => {
-        const [X, Y] = xy(p);
-        i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y);
-      });
+      drawn.forEach(([X, Y], i) => (i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y)));
       ctx.stroke();
     };
-    line('rgba(0,0,0,0.75)', Math.max(4, T.tileSize * 0.32));
-    line('#38bdf8', Math.max(2.5, T.tileSize * 0.18));
+    line('rgba(6,20,34,0.85)', 9);
+    line('#3b9cf6', 5.5);
   },
 
   drawPins(ctx, T) {
@@ -531,6 +566,11 @@ export const gmapsSkin = {
     this.route = walk.cells;
     this.cost = walk.cost;
     this.optimal = optimal;
+    // The drawn route follows the REAL roads: turn the grid answer into a
+    // road-following polyline once (not per animation frame).
+    this.routePts = this.dead
+      ? null
+      : routeGeometry(this.geo.roads, this.geo.bbox, this.geo.rows, this.geo.cols, walk.cells);
 
     if (this.resultEl) {
       const minutes = Math.round(walk.cost);
