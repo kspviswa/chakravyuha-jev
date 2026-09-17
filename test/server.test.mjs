@@ -302,13 +302,16 @@ test('live: an unreachable upstream is a typed 502, not a crash', async () => {
 // ---- no pathfinding in the live path ---------------------------------------
 test('live: the stub BFS never runs when a key is present', async () => {
   const upstream = await startMockUpstream({ status: 200, body: MOCK_LIVE_BODY });
-  const ctx = await startServer({ apiKey: 'sk-x', upstream: upstream.base });
+  const ctx = await startServer({ apiKey: 'sk-x', upstream: `${upstream.base}/v1/systemone` });
+  const hash = requestHash(SMALL_PAYLOAD);
+  const recordedFile = path.join(RECORDED_DIR, `${hash}.live.json`);
   try {
     const { body } = await postJev(ctx.base, SMALL_PAYLOAD);
     assert.equal(body.mode, 'live');
     assert.equal(body._stub, undefined, 'live answers carry no _stub marker');
     assert.notDeepEqual(body.answers.reachable, { type: 'noul', noul: 0.99 });
   } finally {
+    try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ }
     await stopServer(ctx);
     await upstream.close();
   }
