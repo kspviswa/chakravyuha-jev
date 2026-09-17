@@ -303,8 +303,11 @@ test('policy state builders expose position, visited, step, cap and reversal', (
 });
 
 test('policy question builders fan out one move_<dir> per candidate, extras only on first step', () => {
-  const board = makeGridBoard('easy');
+  // Deterministic board: with a random grid the cell below S can be a wall, so
+  // `move_down` may legitimately be absent and the assertions below would flake.
+  const board = boardOf(['S...', '....', '..D.']);
   const candidates = legalNeighbours(board, board.src.r, board.src.c);
+  assert.deepEqual(candidates.map((c) => c.dir), ['down', 'right'], 'fixed board gives two legal moves');
   const q1 = buildPolicyGridQuestions(board, candidates, { r: 0, c: 0, firstStep: true });
   const expected1 = ['reachable', 'path_length', 'maze_difficulty', ...candidates.map((c) => `move_${c.dir}`)].sort();
   assert.deepEqual(Object.keys(q1).sort(), expected1);

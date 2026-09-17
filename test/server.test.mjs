@@ -277,7 +277,9 @@ const MOCK_LIVE_BODY = {
 
 function runLive(ctx, upstream) {
   const hash = requestHash(SMALL_PAYLOAD);
-  const recordedFile = path.join(RECORDED_DIR, `${hash}.live.json`);
+  // Each test server records into its own scratch directory (see
+  // test/helpers.mjs), so this path is private to this test.
+  const recordedFile = path.join(ctx.recordedDir, `${hash}.live.json`);
   return { recordedFile, cleanup: () => { try { fs.rmSync(recordedFile, { force: true }); } catch { /* best-effort */ } } };
 }
 

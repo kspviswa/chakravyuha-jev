@@ -76,6 +76,7 @@ const DEFAULTS = {
   rateLimit: 1200,
   maxBodyBytes: 2_000_000,
   maxQuestions: 512,
+  recordedDir: RECORDED_DIR,
 };
 
 export function readConfig(env = process.env) {
@@ -87,6 +88,10 @@ export function readConfig(env = process.env) {
     rateLimit: Number(env.RATE_LIMIT || DEFAULTS.rateLimit),
     maxBodyBytes: DEFAULTS.maxBodyBytes,
     maxQuestions: DEFAULTS.maxQuestions,
+    // Where live responses are recorded. Overridable so tests can keep their
+    // recordings to themselves — two suites sharing this directory race on the
+    // same filename and corrupt each other's fixture.
+    recordedDir: env.TYPESAFE_RECORDED_DIR || DEFAULTS.recordedDir,
     // JEV_DEBUG=1/true/yes/on → one redacted JSON line per /api/jev to stderr
     debug: env.JEV_DEBUG || '',
     // test-only override so the suite can point at a mock upstream
@@ -446,8 +451,10 @@ async function fixtureManifest() {
   }
 }
 
-async function loadFixtureByHash(hash) {
+async function loadFixtureByHash(hash, config) {
+  const dir = config?.recordedDir || RECORDED_DIR;
   const candidates = [
+    path.join(dir, `${hash}.live.json`),
     path.join(RECORDED_DIR, `${hash}.live.json`),
     path.join(FIXTURES_DIR, `${hash}.json`),
   ];
@@ -464,15 +471,16 @@ async function findFixture(config, hash) {
   if (!isAutoReplay(config.replay)) {
     const index = await fixtureManifest();
     const entry = index[config.replay];
-    if (entry?.hash) return loadFixtureByHash(entry.hash);
+    if (entry?.hash) return loadFixtureByHash(entry.hash, config);
     return null;
   }
-  return loadFixtureByHash(hash);
+  return loadFixtureByHash(hash, config);
 }
 
-async function recordLive(hash, payload, out) {
+async function recordLive(hash, payload, out, config) {
   try {
-    await fs.promises.mkdir(RECORDED_DIR, { recursive: true });
+    const dir = config?.recordedDir || RECORDED_DIR;
+    await fs.promises.mkdir(dir, { recursive: true });
     const envelope = {
       kind: 'live',
       mode: 'live',
@@ -482,7 +490,7 @@ async function recordLive(hash, payload, out) {
       response: out,
     };
     await fs.promises.writeFile(
-      path.join(RECORDED_DIR, `${hash}.live.json`),
+      path.join(dir, `${hash}.live.json`),
       JSON.stringify(envelope, null, 2),
     );
   } catch (e) {
@@ -606,7 +614,7 @@ async function handleApiJev(req, res, config, rateLimited) {
       out = await r.json();
       out.mode = 'live';
       decorateResponse(out, payload, Date.now() - t0);
-      await recordLive(hash, payload, out);
+      await recordLive(hash, payload, out, config);
       log({
         ...base, ok: true, upStatus: r.status, upMs, ms: Date.now() - t0,
         upstream: `<live ok, ${Object.keys(out.answers || {}).length} answers>`,

@@ -1,13 +1,26 @@
 // test/helpers.mjs — shared boot helpers for the http-level tests.
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createServer } from '../server.mjs';
 
+/**
+ * Boot a shim on an ephemeral port. Each server gets its OWN recordings
+ * directory by default: two suites that share `fixtures/recorded` race on the
+ * same `<hash>.live.json` filename and clobber each other's fixture. Pass
+ * `recordedDir` (or `useRealFixtures: true`) to opt back into the real one.
+ */
 export function startServer(overrides = {}) {
-  const server = createServer({ rateLimit: 100_000, ...overrides });
+  const { useRealFixtures, ...rest } = overrides;
+  const scratch = useRealFixtures
+    ? undefined
+    : rest.recordedDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jev-fixtures-'));
+  const server = createServer({ rateLimit: 100_000, recordedDir: scratch, ...rest });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, base: `http://127.0.0.1:${server.address().port}` });
+      resolve({ server, base: `http://127.0.0.1:${server.address().port}`, recordedDir: scratch });
     });
   });
 }
