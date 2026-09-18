@@ -119,6 +119,9 @@ export const chakraSkin = {
   setInstant(v) {
     this.instant = !!v;
     if (this.animator) this.animator.instant = this.instant;
+    // Persisted, like the obstacles toggle — otherwise the checkbox silently
+    // resets on every reload while loadInstant() reads a key nothing wrote.
+    try { localStorage.setItem('jev.instant', this.instant ? '1' : '0'); } catch { /* ignore */ }
   },
 
   /** Obstacles on/off. Persisted so a reload keeps the user's choice. */

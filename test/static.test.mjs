@@ -182,3 +182,14 @@ test('server: the geo route and the whole geo/Overpass surface are gone', () => 
     assert.ok(!server.includes(gone), `server.mjs must not mention ${gone}`);
   }
 });
+
+test('invariant: every persisted control is written AND read by the same key', () => {
+  // A loader that reads a key nothing writes is dead code that silently resets
+  // the control on every reload. Both halves must exist.
+  const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  const skin = fs.readFileSync(path.join(ROOT, 'skins', 'chakravyuha.js'), 'utf8');
+  for (const [key, constName] of [['jev.instant', 'INSTANT_STORAGE'], ['jev.obstacles', 'OBSTACLE_STORAGE']]) {
+    assert.ok(app.includes(`storage.getItem(${constName})`), `app.js must read ${key} via ${constName}`);
+    assert.ok(skin.includes(`localStorage.setItem('${key}'`), `the skin must WRITE ${key} — otherwise the loader is dead`);
+  }
+});

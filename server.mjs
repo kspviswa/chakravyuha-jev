@@ -567,11 +567,23 @@ async function handleApiJev(req, res, config, rateLimited) {
     decorateResponse(out, payload, Date.now() - t0);
     // DEBUG ONLY: keep the last raw answers payload on disk so a parsing failure
     // can be diagnosed exactly, not guessed at. Answers carry no credential.
+    //
+    // The questions are dumped in FULL, not as bare ids: the options offered per
+    // cell and where each option leads are what make a run replayable. Inferring
+    // them from the model's own probability keys works — and was used to diagnose
+    // the 62.5%-accuracy finding — but it is inference, and one hallucinated key
+    // would poison it. The state comes too, so the maze itself can be rebuilt.
     if (debugEnabled(config)) {
       try {
         await fs.promises.writeFile(
           config.answersFile || '/tmp/jev-last-answers.json',
-          JSON.stringify({ at: new Date().toISOString(), model: out.model, questions: Object.keys(payload.questions || {}), answers: out.answers }, null, 1),
+          JSON.stringify({
+            at: new Date().toISOString(),
+            model: out.model,
+            state: payload.state,
+            questions: payload.questions,
+            answers: out.answers,
+          }, null, 1),
         );
       } catch { /* a debug dump must never break a live request */ }
     }
