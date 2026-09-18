@@ -99,11 +99,11 @@ function keyFromHeaders(headers) {
 }
 
 // ---- small helpers -------------------------------------------------------
-function send(res, code, body, type = 'application/json; charset=utf-8') {
+function send(res, code, body, type = 'application/json; charset=utf-8', extra = null) {
   const buf = Buffer.isBuffer(body) ? body
     : typeof body === 'string' ? Buffer.from(body)
     : Buffer.from(JSON.stringify(body));
-  res.writeHead(code, { 'content-type': type, 'content-length': buf.length });
+  res.writeHead(code, { 'content-type': type, 'content-length': buf.length, ...(extra || {}) });
   res.end(buf);
 }
 
@@ -570,8 +570,12 @@ function handleStatic(req, res, url) {
   }
   fs.readFile(file, (readErr, data) => {
     if (readErr) return err(res, 404, ERROR_CODES.NOT_FOUND, `not found: ${url.pathname}`);
-    if (req.method === 'HEAD') return send(res, 200, '', 'text/plain; charset=utf-8');
-    send(res, 200, data, MIME[path.extname(file)] || 'application/octet-stream');
+    // Revalidate every time. These are small local assets and the app is
+    // redeployed in place; without this the browser may keep serving app.js
+    // and skins/* from its own cache and the user runs the previous build.
+    const headers = { 'cache-control': 'no-cache' };
+    if (req.method === 'HEAD') return send(res, 200, '', 'text/plain; charset=utf-8', headers);
+    send(res, 200, data, MIME[path.extname(file)] || 'application/octet-stream', headers);
   });
 }
 
