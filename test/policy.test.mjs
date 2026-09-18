@@ -305,6 +305,37 @@ test('policy: an illegal move in the chain is refused, not applied', async () =>
   const game = await runPolicyGame({ board: b, transport: t });
   assert.ok(game.moves.every((m) => m !== 'outward'), 'an outward move off the outer ring is never applied');
   assert.equal(game.chainAgreement, 0, 'nothing survived the replay');
+  assert.equal(game.outcome, 'illegal', 'a readable but unplayable move is ILLEGAL, not UNPARSED');
+  assert.equal(game.reject, 'illegal', 'the reason is recorded');
+  assert.equal(game.rejectDir, 'outward', 'and the refused direction is named');
+});
+
+test('policy: a legal-but-already-walked first move is REVISITED, not illegal', async () => {
+  const b = makeChakraBoard('easy', lcg(71));
+  const base = scriptedTransport(shortestPick, { chainLimit: 1 });
+  // From the 2nd call on, answer move_1 with the direction back to the cell we
+  // just left: legal from here, but already walked, so it must be REFUSED as a
+  // revisit — never mislabelled as a wall.
+  let call = 0;
+  const t = {
+    async ask(args) {
+      const res = await base.ask.call(this, args);
+      if (call++ > 0) {
+        const st = args.state;
+        const visitedSet = new Set((st.visited || []).map((v) => `${v.ring},${v.sector}`));
+        visitedSet.delete(`${st.abhimanyu.ring},${st.abhimanyu.sector}`);
+        const bb = boardFromState(st);
+        const back = legalCandidates(bb, st.abhimanyu.ring, st.abhimanyu.sector)
+          .find((c) => visitedSet.has(`${c.ring},${c.sector}`));
+        if (back) res.body.answers.move_1 = { type: 'choice', choice: back.dir, probabilities: {}, confidence: 0.5 };
+      }
+      return res;
+    },
+  };
+  const game = await runPolicyGame({ board: b, transport: t });
+  assert.equal(game.outcome, 'illegal', 'a readable but unwalkable move stops the walk');
+  assert.equal(game.reject, 'revisited', 'and the reason is a revisit, not a wall');
+  assert.ok(game.moves.length >= 1, 'the earlier moves were applied');
 });
 
 test('policy: a transport error ends the run as an error', async () => {

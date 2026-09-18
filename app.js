@@ -263,6 +263,12 @@ function setRunOutcome(game, v) {
   } else if (game.outcome === 'unparsed') {
     el.classList.add('unparsed');
     el.textContent = `${prefix} · UNPARSED — Jev's answer could not be read as one of the offered moves.`;
+  } else if (game.outcome === 'illegal') {
+    el.classList.add('unparsed');
+    const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
+    el.textContent = game.reject === 'revisited'
+      ? `${prefix} · REFUSED — Jev's first move ('${game.rejectDir}') is legal here but that cell was already walked.`
+      : `${prefix} · ILLEGAL MOVE — Jev answered '${game.rejectDir}', but no door opens that way from ${where}.`;
   } else if (game.outcome === 'exhausted') {
     el.classList.add('exhausted');
     el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the centre.`;
@@ -313,6 +319,8 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     elapsedMs,
     obstacles: currentSkin.obstacles !== false,
     pathCalls: game ? game.calls.length : 1,
+    reject: game ? game.reject : null,
+    rejectDir: game ? game.rejectDir : null,
     chainAnswered: game ? game.chainAnswered : null,
     chainApplied: game ? game.chainApplied : null,
     chainAgreement: game ? game.chainAgreement : null,

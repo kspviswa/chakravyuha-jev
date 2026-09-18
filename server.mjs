@@ -83,6 +83,8 @@ export function readConfig(env = process.env) {
     maxQuestions: DEFAULTS.maxQuestions,
     // JEV_DEBUG=1/true/yes/on → one redacted JSON line per /api/jev to stderr
     debug: env.JEV_DEBUG || '',
+    // debug-only: where the last raw answers payload is dumped for diagnosis
+    answersFile: env.JEV_ANSWERS_FILE || '/tmp/jev-last-answers.json',
     // test-only override so the suite can point at a mock upstream
     upstream: env.TYPESAFE_UPSTREAM || UPSTREAM,
     // test-only override so the run-history suite writes to a scratch file
@@ -146,6 +148,24 @@ function evlog(config, base, extra = {}) {
   const line = { t: new Date().toISOString(), kind: 'jev', ...base, ...extra };
   if (line.upstream !== undefined) line.upstream = redact(line.upstream);
   console.error('[jev-debug] ' + JSON.stringify(line));
+}
+
+/**
+ * A compact, redacted shape summary of an answers payload — enough to diagnose a
+ * parsing failure from the journal alone, without dumping the whole body.
+ * Answers are never secret, but they can be large.
+ */
+export function answerShape(answers) {
+  if (answers === undefined) return { kind: 'absent' };
+  if (answers === null) return { kind: 'null' };
+  if (Array.isArray(answers)) {
+    return { kind: 'array', count: answers.length, first: truncate(JSON.stringify(answers[0]), 200) };
+  }
+  if (typeof answers !== 'object') return { kind: typeof answers, value: truncate(String(answers), 200) };
+  const keys = Object.keys(answers);
+  const sample = keys.slice(0, 3).map((k) => `${k}=${truncate(JSON.stringify(answers[k]), 160)}`);
+  const withChoice = keys.filter((k) => typeof answers[k]?.choice === 'string').length;
+  return { kind: 'object', count: keys.length, keys: keys.slice(0, 6), withChoice, sample };
 }
 
 class BodyTooLargeError extends Error {
@@ -213,7 +233,7 @@ export const RUNS_CAP = 500;
 export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 
 const RUN_MODES = ['live'];
-const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'exhausted', 'error'];
+const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
 
@@ -301,6 +321,13 @@ export function normaliseRunRecord(input) {
     if ('moves' in src && Array.isArray(src.moves)) rec.moves = src.moves;
     if ('boardHash' in src) rec.boardHash = optionalStr(src, 'boardHash', 200);
     if ('model' in src) rec.model = optionalStr(src, 'model', 200);
+    if ('reject' in src) rec.reject = optionalStr(src, 'reject', 40);
+    if ('rejectDir' in src) rec.rejectDir = optionalStr(src, 'rejectDir', 40);
+    if ('chainAgreement' in src) rec.chainAgreement = optionalNum(src, 'chainAgreement', 0, 1);
+    if ('chainAnswered' in src) rec.chainAnswered = optionalNum(src, 'chainAnswered', 0, 1e6);
+    if ('chainApplied' in src) rec.chainApplied = optionalNum(src, 'chainApplied', 0, 1e6);
+    if ('pathCalls' in src) rec.pathCalls = optionalNum(src, 'pathCalls', 0, 1e6);
+    if ('obstacles' in src) rec.obstacles = src.obstacles === true;
     return { ok: true, record: rec, dropped: note };
   } catch (e) {
     if (e instanceof BadRun) {
@@ -531,9 +558,20 @@ async function handleApiJev(req, res, config, rateLimited) {
     out = await r.json();
     out.mode = 'live';
     decorateResponse(out, payload, Date.now() - t0);
+    // DEBUG ONLY: keep the last raw answers payload on disk so a parsing failure
+    // can be diagnosed exactly, not guessed at. Answers carry no credential.
+    if (debugEnabled(config)) {
+      try {
+        await fs.promises.writeFile(
+          config.answersFile || '/tmp/jev-last-answers.json',
+          JSON.stringify({ at: new Date().toISOString(), model: out.model, questions: Object.keys(payload.questions || {}), answers: out.answers }, null, 1),
+        );
+      } catch { /* a debug dump must never break a live request */ }
+    }
     log({
       ...base, ok: true, mode: 'live', upStatus: r.status, upMs, ms: Date.now() - t0,
       upstream: `<live ok, ${Object.keys(out.answers || {}).length} answers>`,
+      answersShape: answerShape(out.answers),
     });
   } catch (e) {
     log({ ...base, ok: false, code: ERROR_CODES.UPSTREAM_ERROR, ms: Date.now() - t0 });
