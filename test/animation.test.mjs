@@ -16,7 +16,8 @@ import { runPolicyGame } from '../lib/jev.js';
 
 const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; };
 
-/** Rebuild a board from the state the loop sends, so a fake Jev can reason. */
+/** Rebuild a board from the policy state the loop sends. The policy state
+ *  carries no abhimanyu — every question names its own cell. */
 function boardFromState(state) {
   return {
     R: state.maze.rings,
@@ -25,38 +26,44 @@ function boardFromState(state) {
     openRadial: state.open_radial,
     openCirc: state.open_circ,
     warriors: state.warriors,
-    src: state.abhimanyu,
     dst: { ring: 0, sector: 0 },
   };
 }
 
+const CELL_RE = /^cell_(\d+)_(\d+)$/;
+
+/** The direction from one cell to its successor on the optimal route. */
+function optimalDir(b, cell) {
+  const s = shortest(b, cell, b.dst);
+  const next = s ? s.path[1] : null;
+  if (!next) return null;
+  return neighbours(b, cell.ring, cell.sector)
+    .find((n) => n.ring === next.ring && n.sector === next.sector)?.dir || null;
+}
+
 /** A fake Jev that plays perfectly (it is allowed to use the model). It answers
- *  the WHOLE chain — move_1 … move_K — in one response, the way the real
- *  parallel fan-out does. */
+ *  EVERY cell in one response, the way the real parallel fan-out does. */
 function perfectTransport() {
   return {
     async ask({ state, questions }) {
       const b = boardFromState(state);
-      const K = Object.keys(questions || {}).length || 1;
+      const ids = Object.keys(questions || {});
       const answers = {};
-      let here = { ...state.abhimanyu };
-      for (let k = 1; k <= K; k++) {
-        if (here.ring === 0 && here.sector === 0) break;
-        const s = shortest(b, here, b.dst);
-        const next = s ? s.path[1] : null;
-        if (!next) break;
-        const dir = neighbours(b, here.ring, here.sector)
-          .find((n) => n.ring === next.ring && n.sector === next.sector)?.dir;
-        if (!dir) break;
-        answers[`move_${k}`] = { type: 'choice', choice: dir, probabilities: { [dir]: 0.95 }, confidence: 0.95 };
-        here = { ring: next.ring, sector: next.sector };
+      for (const id of ids) {
+        const m = CELL_RE.exec(id);
+        if (!m) continue;
+        const cell = { ring: Number(m[1]), sector: Number(m[2]) };
+        const offered = Object.keys(questions[id].criteria || {});
+        const dir = optimalDir(b, cell);
+        if (!dir || !offered.includes(dir)) continue;
+        answers[id] = { type: 'choice', choice: dir, probabilities: { [dir]: 0.95 }, confidence: 0.95 };
       }
       return {
         ok: true,
         body: {
           answers,
           _ms: 5, _cost_usd: 0.0001,
-          _questions: K,
+          _questions: ids.length,
           usage: { input_tokens: 10, output_tokens: 2 },
         },
       };
@@ -196,40 +203,43 @@ test('invariant: the animator is handed exactly the hops Jev chose, in order', a
 });
 
 test('invariant: a wandering policy animates ITS OWN route, never the optimum', async () => {
-  const b = makeChakraBoard('easy', lcg(9));
-  const optimal = shortest(b, b.src, b.dst);
+  // A start cell with a choice, so "not the optimal first step" exists.
+  let b = null;
+  for (let i = 0; i < 50; i++) {
+    const cand = makeChakraBoard('easy', lcg(9 + i));
+    if (neighbours(cand, cand.src.ring, cand.src.sector).length >= 2) { b = cand; break; }
+  }
+  assert.ok(b, 'found a start cell with more than one door');
 
-  // A deliberately silly Jev: it prefers to curl around the ring and outward.
-  // It answers the whole chain, following its own preference at every step.
+  const optimal = shortest(b, b.src, b.dst);
+  const optFirst = optimal ? optimal.path[1] : null;
+  const detour = neighbours(b, b.src.ring, b.src.sector)
+    .find((d) => !(optFirst && d.ring === optFirst.ring && d.sector === optFirst.sector));
+
+  // A deliberately silly Jev: at the start cell it refuses the optimal door and
+  // takes the detour; everywhere else it plays correctly. It is still a POLICY —
+  // one move per cell — so the questions stay answerable in one pass.
   const silly = {
     async ask({ state, questions }) {
       const bb = boardFromState(state);
-      const K = Object.keys(questions || {}).length || 1;
+      const ids = Object.keys(questions || {});
       const answers = {};
-      let here = { ...state.abhimanyu };
-      const seen = new Set((state.visited || []).map((v) => `${v.ring},${v.sector}`));
-      for (let k = 1; k <= K; k++) {
-        const cands = neighbours(bb, here.ring, here.sector)
-          .filter((n) => !seen.has(`${n.ring},${n.sector}`));
-        if (cands.length === 0) break;
-        const probs = {};
-        let best = null, bestP = -1;
-        for (const nb of cands) {
-          const p = nb.dir === 'counterclockwise' ? 0.9 : nb.dir === 'outward' ? 0.8 : 0.05;
-          probs[nb.dir] = p;
-          if (p > bestP) { bestP = p; best = nb; }
-        }
-        if (!best) break;
-        answers[`move_${k}`] = { type: 'choice', choice: best.dir, probabilities: probs };
-        here = { ring: best.ring, sector: best.sector };
-        seen.add(`${here.ring},${here.sector}`);
+      for (const id of ids) {
+        const m = CELL_RE.exec(id);
+        if (!m) continue;
+        const cell = { ring: Number(m[1]), sector: Number(m[2]) };
+        const offered = Object.keys(questions[id].criteria || {});
+        const atStart = cell.ring === b.src.ring && cell.sector === b.src.sector;
+        let dir = atStart && offered.includes(detour.dir) ? detour.dir : optimalDir(bb, cell);
+        if (!dir || !offered.includes(dir)) dir = offered[0];
+        answers[id] = { type: 'choice', choice: dir, probabilities: { [dir]: 0.9 }, confidence: 0.9 };
       }
       return {
         ok: true,
         body: {
           answers,
           _ms: 3, _cost_usd: 0.0001,
-          _questions: K,
+          _questions: ids.length,
           usage: { input_tokens: 8, output_tokens: 2 },
         },
       };
@@ -239,30 +249,27 @@ test('invariant: a wandering policy animates ITS OWN route, never the optimum', 
   const hops = [];
   const game = await runPolicyGame({ board: b, transport: silly, onStep: (h) => hops.push(h) });
 
-  // Whatever happened, every animated direction must be one Jev actually
-  // returned — the animator cannot invent a move.
-  for (const h of hops) {
-    assert.ok(game.moves.includes(h.dir), 'the animated direction is one Jev returned');
+  // One hop per applied decision, contiguous, and every hop is a move Jev
+  // actually returned — the animator cannot invent one.
+  assert.equal(hops.length, game.moves.length, 'one hop per applied decision');
+  assert.deepEqual(hops[0].from, { ring: b.src.ring, sector: b.src.sector });
+  for (let i = 1; i < hops.length; i++) {
+    assert.deepEqual(hops[i].from, hops[i - 1].to, `hop ${i} starts where hop ${i - 1} ended`);
   }
 
-// The decisive assertion: the cells the sprite visited are the cells the
-// walked move-list visits — NOT the optimal path. If the animation
-// had been fed the optimum, these two would diverge whenever the policy
-// wandered.
-const s = shortest(b, b.src, b.dst);
-if (s) {
+  // The decisive assertion: the first cell the sprite walked to is the detour,
+  // NOT the optimal first step. Had the animation been fed the optimum, this
+  // would be the optimal cell instead.
+  assert.deepEqual(
+    { ring: hops[0].to.ring, sector: hops[0].to.sector },
+    { ring: detour.ring, sector: detour.sector },
+    "the sprite walked the policy's detour, not the optimum",
+  );
   assert.notDeepEqual(
     hops.map((h) => ({ ring: h.to.ring, sector: h.to.sector })),
-    s.path.slice(1),
-    'the sprite walked the policy\'s route, not the optimum',
+    optimal.path.slice(1),
+    'the sprite walked the policy route, not the optimum',
   );
-}
-
-  // And on this seed the silly policy genuinely is not optimal, so the test is
-  // actually discriminating rather than vacuously true.
-  if (game.outcome === 'reached') {
-    assert.ok(hops.length >= optimal.length, 'a wandering policy takes at least the optimal count');
-  }
 });
 
 test('invariant: onStep is awaited, so the run paces the animation', async () => {

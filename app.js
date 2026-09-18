@@ -19,9 +19,9 @@ import {
 } from './lib/transport.js';
 import {
   askJev, runPolicyGame, buildPolicyBody,
-  buildPolicyChakraState, chakraPathQuestions, PATH_ASK_MOVES,
+  chakraPolicyQuestions, policyCells,
 } from './lib/jev.js';
-import { boardHash, computeStepAccuracy, optimalRoute } from './lib/chakra.js';
+import { boardHash, computeStepAccuracy, optimalRoute, chakraPolicyState } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
@@ -109,15 +109,15 @@ async function askPolicy(key) {
   currentSkin.begin();
   const board = currentSkin.board;
   $('state-pre').textContent = JSON.stringify({
-    loop: 'ask for the whole route → check it → ask again if it broke',
+    loop: 'ask for the policy for every cell → follow it → re-ask only if the walk doubles back',
     obstacles: currentSkin.obstacles !== false ? 'on (warriors)' : 'off (pure wall maze)',
-    sampleState: buildPolicyChakraState(board, {
-      ring: board.src.ring, sector: board.src.sector,
-      visited: [board.src], askMoves: PATH_ASK_MOVES,
-    }),
-    sampleQuestions: Object.keys(chakraPathQuestions(board, {
-      ring: board.src.ring, sector: board.src.sector, askMoves: 3,
-    })),
+    cells: policyCells(board).length,
+    sampleState: chakraPolicyState(board),
+    sampleQuestions: (() => {
+      const q = chakraPolicyQuestions(board);
+      const id = `cell_${board.src.ring}_${board.src.sector}`;
+      return { [id]: q[id] };
+    })(),
   }, null, 2);
 
   const wall0 = performance.now();
@@ -222,8 +222,9 @@ function renderMeters(body, game, v, elapsedMs) {
   $('m-msstep').textContent = n && Number.isFinite(game.totalMs) ? `${fmt(game.totalMs / n)} ms` : '—';
   $('m-qstep').textContent = n && Number.isFinite(game.totalQuestions) ? fmt(game.totalQuestions / n, 2) : '—';
   $('m-cstep').textContent = n ? fmt(game.calls.length / n, 2) : '—';
-  // Parallel-path calibration: how much of each returned chain survived the
-  // check against the real doors.
+  // Parallel-policy calibration: how much of the policy Jev returned for every
+  // cell the walk actually consumed. Whether those answers were the RIGHT ones
+  // is the post-run step accuracy, measured after the run ends.
   const chainEl = $('m-chain');
   if (chainEl) {
     const ca = game.chainAgreement;
@@ -243,9 +244,10 @@ function setRunOutcome(game, v) {
   const el = $('run-outcome');
   if (!el || !game) { if (el) el.hidden = true; return; }
   el.hidden = false;
-  el.classList.remove('reached', 'stuck', 'unparsed', 'exhausted', 'error');
+  el.classList.remove('reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error');
   const calls = Array.isArray(game.calls) ? game.calls.length : 0;
-  const prefix = `${calls} call${calls === 1 ? '' : 's'}`;
+  const rep = game.repairs ? ` · ${game.repairs} repair${game.repairs === 1 ? '' : 's'}` : '';
+  const prefix = `${calls} call${calls === 1 ? '' : 's'}${rep}`;
   if (game.outcome === 'reached') {
     el.classList.add('reached');
     const optimalNote = v && v.optimal !== null ? ` · ${v.optimal} optimal` : '';
@@ -255,20 +257,23 @@ function setRunOutcome(game, v) {
     // Honest wording: running out of UNVISITED moves is not being trapped. The
     // centre is normally still reachable — the walk would just have to retrace,
     // which the fresh-only rule forbids.
+    const why = game.reject === 'nowhere' ? 'no door opens from here' : 'no unvisited move left';
     const optLen = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
-      ? `no unvisited move left; the centre was still ${v.optimalFromHere} moves away`
-      : 'no unvisited move left';
+      ? `${why}; the centre was still ${v.optimalFromHere} moves away`
+      : why;
     const correctSteps = Math.round((game._stepAccuracy || 0) * game.steps);
     el.textContent = `${prefix} · STUCK at step ${game.steps} · ${optLen} · ${correctSteps}/${game.steps} steps on a shortest route`;
   } else if (game.outcome === 'unparsed') {
     el.classList.add('unparsed');
-    el.textContent = `${prefix} · UNPARSED — Jev's answer could not be read as one of the offered moves.`;
-  } else if (game.outcome === 'illegal') {
-    el.classList.add('unparsed');
+    el.textContent = `${prefix} · UNREADABLE — Jev returned no usable move for ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}.`;
+  } else if (game.outcome === 'revisited') {
+    el.classList.add('illegal');
     const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-    el.textContent = game.reject === 'revisited'
-      ? `${prefix} · REFUSED — Jev's first move ('${game.rejectDir}') is legal here but that cell was already walked.`
-      : `${prefix} · ILLEGAL MOVE — Jev answered '${game.rejectDir}', but no door opens that way from ${where}.`;
+    el.textContent = `${prefix} · DOUBLED BACK — the policy sent '${game.rejectDir}' from ${where}, onto a cell already walked, and the repair budget was spent.`;
+  } else if (game.outcome === 'illegal') {
+    el.classList.add('illegal');
+    const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
+    el.textContent = `${prefix} · UNPLAYABLE — Jev answered '${game.rejectDir}' at ${where}, but no door opens that way.`;
   } else if (game.outcome === 'exhausted') {
     el.classList.add('exhausted');
     el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the centre.`;
@@ -324,6 +329,9 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     chainAnswered: game ? game.chainAnswered : null,
     chainApplied: game ? game.chainApplied : null,
     chainAgreement: game ? game.chainAgreement : null,
+    cellsAsked: game ? game.cellsAsked : null,
+    repairs: game ? game.repairs : null,
+    mismatchCount: game ? game.mismatchCount : null,
     model: body.model || null,
   };
 }

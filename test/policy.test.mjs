@@ -1,19 +1,29 @@
-// test/policy.test.mjs — the polar policy loop, end to end, with no network.
+// test/policy.test.mjs — the polar policy walk, end to end, with no network.
 //
-// policy mode is the real loop: ASK → APPLY → repeat. At each step Jev judges
-// the legal next moves; the loop applies its argmax and stops honestly when it
-// is stuck or out of budget. A mock upstream stands in for TypeSafe, so the
-// whole LIVE path is exercised without a key and without the internet.
+// Policy mode asks ONE question per cell — "standing at ring R, sector S, which
+// move is the first step of a shortest route to the centre?" — with that cell's
+// own doors as the options. One call returns a move for every cell; the walk
+// then follows that policy from the start cell. A mock upstream stands in for
+// TypeSafe, so the whole LIVE path is exercised without a key and without the
+// internet.
+//
+// The mock answers one of the options the question OFFERED, exactly as a
+// well-behaved model would. That is the property the real failure lacked: the
+// old path mode offered all four moves at a cell it never named, so an answer
+// could be a move no door supports.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeChakraBoard, CHAKRA_PRESETS, computeStepAccuracy, shortest } from '../lib/chakra.js';
 import {
-  legalCandidates, chakraPathQuestions, readChain, runPolicyGame, buildPolicyBody,
+  legalCandidates, chakraPolicyQuestions, policyCells, readPolicy,
+  runPolicyGame, buildPolicyBody,
 } from '../lib/jev.js';
 
 const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; };
 
+/** Rebuild the maze from a policy state. The policy state carries no abhimanyu
+ *  and no visited — every question names its own cell. */
 function boardFromState(state) {
   return {
     R: state.maze.rings,
@@ -22,41 +32,44 @@ function boardFromState(state) {
     openRadial: state.open_radial,
     openCirc: state.open_circ,
     warriors: state.warriors,
-    src: state.abhimanyu,
     dst: { ring: 0, sector: 0 },
   };
 }
 
-/** A transport that answers the WHOLE chain — move_1 … move_K — in one pass,
- *  the way the real parallel fan-out does. It walks the policy's own route to
- *  produce each answer. */
-function scriptedTransport(choiceFn, { ms = 7, cost = 0.0002, tokensIn = 120, tokensOut = 30, chainLimit = null } = {}) {
+const CELL_RE = /^cell_(\d+)_(\d+)$/;
+
+/**
+ * A transport that answers the whole policy in one pass: for every cell asked
+ * about, it picks one of the options that cell's question offered. `choiceFn`
+ * receives (board, cell, offeredMoves).
+ */
+function scriptedTransport(choiceFn, {
+  ms = 7, cost = 0.0002, tokensIn = 120, tokensOut = 30, skipCells = 0,
+} = {}) {
   return {
     calls: 0,
     async ask({ state, questions }) {
       this.calls++;
       const b = boardFromState(state);
-      const K = Object.keys(questions || {}).length || 1;
+      const ids = Object.keys(questions || {});
       const answers = {};
-      let here = { ...state.abhimanyu };
-      const visitedSet = new Set((state.visited || []).map((v) => `${v.ring},${v.sector}`));
-      const limit = chainLimit === null ? K : Math.min(K, chainLimit);
-      for (let k = 1; k <= limit; k++) {
-        const fresh = legalCandidates(b, here.ring, here.sector)
-          .filter((c) => !visitedSet.has(`${c.ring},${c.sector}`));
-        if (fresh.length === 0) break;
-        const choice = choiceFn(b, here, fresh, state);
-        if (!choice) break;
-        answers[`move_${k}`] = {
+      let skipped = 0;
+      for (const id of ids) {
+        const m = CELL_RE.exec(id);
+        if (!m) continue;
+        const cell = { ring: Number(m[1]), sector: Number(m[2]) };
+        const offered = Object.keys(questions[id].criteria || {});
+        const moves = legalCandidates(b, cell.ring, cell.sector).filter((c) => offered.includes(c.dir));
+        if (moves.length === 0) continue;
+        if (skipped < skipCells) { skipped++; continue; }   // simulate an unreadable answer
+        const choice = choiceFn(b, cell, moves);
+        if (!choice || !offered.includes(choice)) continue;
+        answers[id] = {
           type: 'choice',
           choice,
           probabilities: { [choice]: 0.95 },
           confidence: 0.95,
         };
-        const nxt = fresh.find((c) => c.dir === choice);
-        if (!nxt) break;
-        here = { ring: nxt.ring, sector: nxt.sector };
-        visitedSet.add(`${here.ring},${here.sector}`);
       }
       return {
         ok: true,
@@ -64,7 +77,7 @@ function scriptedTransport(choiceFn, { ms = 7, cost = 0.0002, tokensIn = 120, to
           answers,
           _ms: ms,
           _cost_usd: cost,
-          _questions: K,
+          _questions: ids.length,
           usage: { input_tokens: tokensIn, output_tokens: tokensOut },
           model: 'jev-latest',
         },
@@ -73,19 +86,19 @@ function scriptedTransport(choiceFn, { ms = 7, cost = 0.0002, tokensIn = 120, to
   };
 }
 
-// ---- shortest-following policy -------------------------------------------
-function shortestPick(b, here, fresh) {
+// ---- a correct model: the first step of a shortest route --------------------
+function shortestPick(b, here, moves) {
   const s = shortest(b, here, b.dst);
   const next = s ? s.path[1] : null;
-  if (!next) return fresh[0]?.dir || null;
-  const match = fresh.find((c) => c.ring === next.ring && c.sector === next.sector);
-  return match ? match.dir : fresh[0]?.dir || null;
+  if (!next) return moves[0]?.dir || null;
+  const match = moves.find((c) => c.ring === next.ring && c.sector === next.sector);
+  return match ? match.dir : moves[0]?.dir || null;
 }
 
-// ---- inward-greedy policy -------------------------------------------------
-function inwardGreedyPick(b, here, fresh) {
-  const inward = fresh.find((c) => c.dir === 'inward');
-  return inward ? inward.dir : fresh[0]?.dir || null;
+// ---- the field failure, reproduced: the same move everywhere ----------------
+function alwaysInwardPick(b, here, moves) {
+  const inward = moves.find((c) => c.dir === 'inward');
+  return inward ? inward.dir : moves[0]?.dir || null;
 }
 
 // ---- unit level ------------------------------------------------------------
@@ -102,58 +115,108 @@ test('legalCandidates: offers only moves that respect walls and warriors', () =>
   }
 });
 
-test('chakraPathQuestions: ONE call asks for the whole route, move_1 … move_K', () => {
-  const b = makeChakraBoard('easy', lcg(4));
-  const q = chakraPathQuestions(b, { ring: b.src.ring, sector: b.src.sector, askMoves: 12 });
-  const keys = Object.keys(q);
-  assert.equal(keys.length, 12, 'one question per move asked for');
-  assert.deepEqual(keys.slice(0, 3), ['move_1', 'move_2', 'move_3'], 'named move_k, in order');
-  for (const k of keys) {
-    assert.equal(q[k].type, 'choice', `${k} is a choice`);
-    assert.ok(q[k].instructions.includes('quickest route'), `${k} asks for the quickest route`);
+test('policyCells: every cell but the centre, skipping cells with no door at all', () => {
+  for (const d of ['easy', 'medium', 'hard']) {
+    const b = makeChakraBoard(d, lcg(4));
+    const cells = policyCells(b);
+    assert.ok(!cells.some((c) => c.ring === 0), `${d}: the centre is never asked about`);
+    assert.ok(cells.length <= b.R * b.S, `${d}: at most R×S cells`);
+    assert.ok(cells.length > b.R * b.S * 0.8, `${d}: nearly every cell is asked about`);
+    for (const c of cells) assert.ok(legalCandidates(b, c.ring, c.sector).length > 0, 'each has a door');
   }
-  assert.ok(q.move_1.instructions.includes('move 1'), 'move_1 asks for the 1st move');
-  assert.ok(q.move_12.instructions.includes('move 12'), 'move_12 asks for the 12th move');
-  assert.ok(!q.next_move, 'the retired per-step question is gone');
-  assert.ok(!q.reachable, 'no reachable question');
+});
+
+test('chakraPolicyQuestions: ONE question per cell, each naming its own cell', () => {
+  const b = makeChakraBoard('easy', lcg(4));
+  const q = chakraPolicyQuestions(b);
+  const keys = Object.keys(q);
+  assert.equal(keys.length, policyCells(b).length, 'one question per cell');
+  for (const id of keys) {
+    const m = CELL_RE.exec(id);
+    assert.ok(m, `${id} is named cell_<ring>_<sector>`);
+    const { ring, sector } = { ring: Number(m[1]), sector: Number(m[2]) };
+    assert.equal(q[id].type, 'choice', `${id} is a choice`);
+    assert.ok(q[id].instructions.includes(`ring ${ring}, sector ${sector}`),
+      `${id} names the cell the move is taken from`);
+    assert.ok(/shortest route/.test(q[id].instructions), `${id} asks for a shortest route`);
+  }
+  assert.ok(!q.move_1, 'the retired move_k question is gone');
+  assert.ok(!q.next_move, 'no per-step question');
   assert.ok(!q.route_length, 'no route_length question');
 });
 
-test('chakraPathQuestions: the answer space is the four moves, generically described', () => {
+test('chakraPolicyQuestions: the options are the cell’s real doors, with destinations named', () => {
   const b = makeChakraBoard('easy', lcg(5));
-  const q = chakraPathQuestions(b, { ring: b.src.ring, sector: b.src.sector, askMoves: 4 });
-  for (const k of Object.keys(q)) {
+  const q = chakraPolicyQuestions(b);
+  for (const id of Object.keys(q)) {
+    const m = CELL_RE.exec(id);
+    const ring = Number(m[1]), sector = Number(m[2]);
+    const doors = legalCandidates(b, ring, sector);
     assert.deepEqual(
-      Object.keys(q[k].criteria).sort(),
-      ['clockwise', 'counterclockwise', 'inward', 'outward'],
-      `${k} offers exactly the four moves`,
+      Object.keys(q[id].criteria).sort(), doors.map((d) => d.dir).sort(),
+      `${id} offers exactly the doors that open from it`,
     );
+    // Every criterion must name where that door actually goes.
+    for (const d of doors) {
+      if (d.ring === 0) assert.ok(/centre/.test(q[id].criteria[d.dir]), `${id}.${d.dir} names the centre`);
+      else assert.ok(q[id].criteria[d.dir].includes(`ring ${d.ring}, sector ${d.sector}`),
+        `${id}.${d.dir} names its destination`);
+    }
   }
-  // move_k is taken at a cell the question does not name, so a criterion must
-  // never claim a specific destination.
-  assert.ok(/one ring toward the centre/.test(q.move_2.criteria.inward), 'inward is described by meaning');
-  assert.ok(!/ring \d/.test(q.move_2.criteria.inward), 'no destination is baked into the criteria');
 });
 
-test('chakraPathQuestions: never uses forbidden words', () => {
+test('chakraPolicyQuestions: no question ever offers a move that is not a door', () => {
+  // The property the old path mode lacked. If this holds, an answer that picks
+  // an offered option is always playable.
+  for (const d of ['easy', 'medium', 'hard']) {
+    const b = makeChakraBoard(d, lcg(9));
+    const q = chakraPolicyQuestions(b);
+    for (const id of Object.keys(q)) {
+      const m = CELL_RE.exec(id);
+      const ring = Number(m[1]), sector = Number(m[2]);
+      const real = new Set(legalCandidates(b, ring, sector).map((c) => c.dir));
+      for (const dir of Object.keys(q[id].criteria)) {
+        assert.ok(real.has(dir), `${d} ${id}: '${dir}' is offered but is not a door`);
+      }
+    }
+  }
+});
+
+test('chakraPolicyQuestions: a banned move is struck from that cell’s question only', () => {
   const b = makeChakraBoard('easy', lcg(6));
-  const q = chakraPathQuestions(b, { ring: b.src.ring, sector: b.src.sector, askMoves: 6 });
+  const target = { ring: b.src.ring, sector: b.src.sector };
+  const doors = legalCandidates(b, target.ring, target.sector);
+  const banned = new Map([[`${target.ring},${target.sector}`, new Set([doors[0].dir])]]);
+  const q = chakraPolicyQuestions(b, { banned });
+  assert.ok(!(doors[0].dir in q[`cell_${target.ring}_${target.sector}`].criteria),
+    'the struck move is gone from that cell');
+  const other = policyCells(b).find((c) => c.ring !== target.ring || c.sector !== target.sector);
+  assert.ok(q[`cell_${other.ring}_${other.sector}`], 'other cells are untouched');
+});
+
+test('chakraPolicyQuestions: never uses forbidden words', () => {
+  const b = makeChakraBoard('easy', lcg(6));
+  const q = chakraPolicyQuestions(b);
   const allText = Object.values(q).map((x) => x.instructions).join(' ');
   assert.ok(!/a good next step/i.test(allText), 'no "a good next step"');
   assert.ok(!/should not wander/i.test(allText), 'no "should not wander"');
   assert.ok(!/toward the centre/i.test(allText), 'no radial-greedy bait');
 });
 
-test('readChain: a contiguous chain of moves, and it stops at the first gap', () => {
+test('readPolicy: cell → move, and an unknown move is simply absent', () => {
+  const b = makeChakraBoard('easy', lcg(7));
   const answers = {
-    move_1: { type: 'choice', choice: 'inward' },
-    move_2: { type: 'choice', choice: 'clockwise' },
-    move_4: { type: 'choice', choice: 'outward' },
+    cell_2_3: { type: 'choice', choice: 'inward', probabilities: { inward: 0.8 }, confidence: 0.6 },
+    cell_1_1: { type: 'choice', choice: 'sideways' },
+    cell_1_2: { type: 'choice' },
+    cell_9_9: { type: 'choice', choice: 'inward' },
   };
-  const chain = readChain(answers, 4);
-  assert.deepEqual(chain.map((c) => c.dir), ['inward', 'clockwise'], 'stops at the missing move_3');
-  assert.deepEqual(readChain({ move_1: { type: 'choice', choice: 'sideways' } }, 3), [], 'an unknown move ends the chain');
-  assert.deepEqual(readChain({}, 3), [], 'no answers, no chain');
+  const p = readPolicy(answers, b);
+  assert.equal(p.size, 1, 'only the well-formed answer about a real cell is read');
+  assert.equal(p.get('2,3').dir, 'inward');
+  assert.equal(p.get('2,3').p, 0.8, 'the probability of the chosen move');
+  assert.equal(p.get('2,3').confidence, 0.6);
+  assert.equal(readPolicy({}, b).size, 0);
 });
 
 test('computeStepAccuracy: 1.0 for a perfect run', () => {
@@ -172,170 +235,145 @@ test('computeStepAccuracy: 1.0 for a perfect run', () => {
   assert.equal(acc, 1.0, 'perfect route has stepAccuracy 1.0');
 });
 
-// ---- the loop --------------------------------------------------------------
-test('policy: shortest-following policy reaches the centre on every difficulty', async () => {
+// ---- the walk --------------------------------------------------------------
+test('policy: a correct policy reaches the centre on every difficulty', async () => {
   for (const d of ['easy', 'medium', 'hard']) {
     let reached = 0;
-    let totalAcc = 0;
     for (let i = 0; i < 20; i++) {
       const b = makeChakraBoard(d, lcg(17 + i));
-      const t = scriptedTransport(shortestPick);
-      const game = await runPolicyGame({ board: b, transport: t });
-      if (game.outcome === 'reached') {
-        reached++;
-        const acc = computeStepAccuracy(b, game.moves, game.board.src);
-        if (acc !== null) totalAcc += acc;
-      }
+      const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
+      if (game.outcome === 'reached') reached++;
     }
-    assert.ok(reached >= 18, `${d}: at least 18/20 reached with shortest policy (got ${reached})`);
+    assert.ok(reached >= 18, `${d}: at least 18/20 reached (got ${reached})`);
   }
 });
 
-test('policy: shortest-following policy achieves stepAccuracy 1.0 on 200 boards per difficulty', async () => {
-  for (const d of ['easy', 'medium', 'hard']) {
-    let allAcc1 = true;
-    let reachedCount = 0;
-    for (let i = 0; i < 200; i++) {
-      const b = makeChakraBoard(d, lcg(42 + i));
-      const t = scriptedTransport(shortestPick);
-      const game = await runPolicyGame({ board: b, transport: t });
-      if (game.outcome !== 'reached') { allAcc1 = false; continue; }
-      reachedCount++;
-      const acc = computeStepAccuracy(b, game.moves, game.board.src);
-      if (acc !== 1.0) allAcc1 = false;
-    }
-    assert.ok(allAcc1, `${d}: all reached runs have stepAccuracy 1.0 (${reachedCount} reached)`);
-  }
-});
-
-test('policy: inward-greedy policy fails honestly with stepAccuracy < 1', async () => {
-  for (const d of ['easy', 'medium', 'hard']) {
-    let hasFailure = false;
-    for (let i = 0; i < 20; i++) {
-      const b = makeChakraBoard(d, lcg(99 + i));
-      const t = scriptedTransport(inwardGreedyPick);
-      const game = await runPolicyGame({ board: b, transport: t });
-      if (game.outcome !== 'reached') {
-        hasFailure = true;
-        const acc = computeStepAccuracy(b, game.moves, game.board.src);
-        if (acc !== null) assert.ok(acc < 1, `${d}: inward-greedy stepAccuracy < 1 (${acc})`);
-      }
-    }
-    assert.ok(hasFailure, `${d}: inward-greedy produces failures`);
-  }
-});
-
-test('policy: unparsed answer yields outcome unparsed, not stuck', async () => {
-  const b = makeChakraBoard('easy', lcg(7));
-  const t = {
-    async ask({ questions }) {
-      return {
-        ok: true,
-        body: {
-          answers: { move_1: { type: 'choice', choice: 'sideways' } },
-          _ms: 1, _cost_usd: 0, _questions: Object.keys(questions || {}).length,
-          usage: { input_tokens: 10, output_tokens: 2 },
-        },
-      };
-    },
-  };
-  const game = await runPolicyGame({ board: b, transport: t });
-  assert.equal(game.outcome, 'unparsed', 'unparseable answer → unparsed');
-});
-
-test('policy: ONE call carries the whole route (the parallel fan-out)', async () => {
+test('policy: a correct policy reaches the centre in ONE call and never doubles back', async () => {
   for (const d of ['easy', 'medium', 'hard']) {
     const b = makeChakraBoard(d, lcg(61));
     const t = scriptedTransport(shortestPick);
     const game = await runPolicyGame({ board: b, transport: t });
-    assert.equal(game.outcome, 'reached');
-    assert.equal(t.calls, 1, `${d}: a whole route costs exactly one call (got ${t.calls})`);
-    assert.equal(game.calls.length, 1);
-    assert.equal(game.chainAnswered, game.steps, `${d}: every move came back in one chain`);
-    assert.equal(game.chainAgreement, 1, `${d}: a consistent chain replays completely`);
+    assert.equal(game.outcome, 'reached', `${d}: reached`);
+    assert.equal(t.calls, 1, `${d}: the whole walk costs exactly one call (got ${t.calls})`);
+    assert.equal(game.repairs, 0, `${d}: a correct policy needs no repair`);
+    assert.equal(game.reject, null, `${d}: nothing was refused`);
+    // A correct policy is a strict descent, so no cell is ever entered twice.
+    const seen = new Set();
+    for (const m of game.applied) {
+      assert.ok(!seen.has(m.cell), `${d}: cell ${m.cell} was walked twice`);
+      seen.add(m.cell);
+    }
   }
 });
 
-test('policy: a chain that breaks mid-way is re-asked and the run still finishes', async () => {
-  const b = makeChakraBoard('easy', lcg(63));
-  const REV = { inward: 'outward', outward: 'inward', clockwise: 'counterclockwise', counterclockwise: 'clockwise' };
+test('policy: the field failure — one move repeated for every cell — is never UNPARSED', async () => {
+  // This is the bug that shipped: 64 questions, 64 identical answers. In policy
+  // mode the same model still answers 'inward' everywhere, but every answer is
+  // drawn from that cell's real doors, so it is always PLAYABLE. The walk may
+  // wander, it may get boxed in — it must never report the answers unreadable,
+  // and it must never step through a wall.
+  for (const d of ['easy', 'medium', 'hard']) {
+    for (let i = 0; i < 25; i++) {
+      const b = makeChakraBoard(d, lcg(300 + i));
+      const game = await runPolicyGame({ board: b, transport: scriptedTransport(alwaysInwardPick) });
+      assert.notEqual(game.outcome, 'unparsed', `${d}: repeated answers are readable`);
+      // An offered move is always a real door, so the walk can only ever refuse
+      // one for doubling back — never for there being no such door.
+      assert.notEqual(game.outcome, 'illegal', `${d}: an offered move is always a door`);
+      if (game.outcome === 'revisited') assert.equal(game.reject, 'revisited');
+      // Replay the moves against the doors: every one must be a real edge.
+      let here = { ring: b.src.ring, sector: b.src.sector };
+      for (const dir of game.moves) {
+        const edge = legalCandidates(b, here.ring, here.sector).find((c) => c.dir === dir);
+        assert.ok(edge, `${d}: move '${dir}' from ${here.ring},${here.sector} is not a door`);
+        here = { ring: edge.ring, sector: edge.sector };
+      }
+    }
+  }
+});
+
+test('policy: an answer that is not one of the offered doors is refused and repaired', async () => {
+  const b = makeChakraBoard('easy', lcg(67));
+  // 'outward' from the outermost ring is off the board, so it is never offered
+  // at the start cell. A model that answers it anyway is refused.
+  let call = 0;
   const base = scriptedTransport(shortestPick);
-  // Sabotage move_4 with the reverse of move_3: that always lands back on the
-  // cell just left, which the fresh-only rule forbids — so the chain must break
-  // there, and the loop must ask again from where it stopped.
   const t = {
     calls: 0,
     async ask(args) {
       const res = await base.ask.call(this, args);
-      const m3 = res.body.answers.move_3;
-      if (m3) {
-        res.body.answers.move_4 = {
-          type: 'choice', choice: REV[m3.choice], probabilities: {}, confidence: 0.5,
+      if (call++ === 0) {
+        res.body.answers[`cell_${b.src.ring}_${b.src.sector}`] = {
+          type: 'choice', choice: 'outward', probabilities: { outward: 0.9 }, confidence: 0.9,
         };
       }
       return res;
     },
   };
   const game = await runPolicyGame({ board: b, transport: t });
-  assert.equal(game.outcome, 'reached', 'a broken chain does not end the run');
-  assert.ok(t.calls > 1, `the loop asked again (${t.calls} calls)`);
-  assert.ok(game.chainAgreement < 1, 'the agreement ratio records the break');
-  assert.equal(game.chainApplied, game.steps, 'every applied move came from a chain');
+  assert.ok(!game.moves.includes('outward') || game.outcome === 'reached',
+    'an unoffered move is never applied as the first step');
+  assert.ok(t.calls > 1, `the walk repaired and re-asked (${t.calls} calls)`);
+  assert.ok(game.repairs >= 1, 'the repair is recorded');
 });
 
-test('policy: an illegal move in the chain is refused, not applied', async () => {
-  const b = makeChakraBoard('easy', lcg(67));
-  // Answer move_1 with a move that is legal somewhere but never from the start
-  // on a wall: 'outward' from the outermost ring is blocked.
-  const t = {
-    async ask({ questions }) {
-      return {
-        ok: true,
-        body: {
-          answers: {
-            move_1: { type: 'choice', choice: 'outward' },
-            move_2: { type: 'choice', choice: 'outward' },
-          },
-          _ms: 1, _cost_usd: 0, _questions: Object.keys(questions || {}).length,
-          usage: { input_tokens: 10, output_tokens: 2 },
-        },
-      };
-    },
-  };
-  const game = await runPolicyGame({ board: b, transport: t });
-  assert.ok(game.moves.every((m) => m !== 'outward'), 'an outward move off the outer ring is never applied');
-  assert.equal(game.chainAgreement, 0, 'nothing survived the replay');
-  assert.equal(game.outcome, 'illegal', 'a readable but unplayable move is ILLEGAL, not UNPARSED');
-  assert.equal(game.reject, 'illegal', 'the reason is recorded');
-  assert.equal(game.rejectDir, 'outward', 'and the refused direction is named');
+test('policy: a policy that doubles back never re-enters a cell, and is repaired', async () => {
+  const REV = { inward: 'outward', outward: 'inward', clockwise: 'counterclockwise', counterclockwise: 'clockwise' };
+  let refusals = 0;
+  for (let i = 0; i < 20; i++) {
+    const b = makeChakraBoard('easy', lcg(71 + i));
+    // Answer every cell with the reverse of the correct move: that points back
+    // toward where the walk came from. The fresh-only rule must refuse it.
+    const t = scriptedTransport((bb, cell, moves) => {
+      const correct = shortestPick(bb, cell, moves);
+      const rev = REV[correct];
+      return rev && moves.some((m) => m.dir === rev) ? rev : correct;
+    });
+    const game = await runPolicyGame({ board: b, transport: t });
+    refusals += game.repairs;
+
+    // The invariant that matters: a doubling-back move is never applied, so no
+    // cell is ever entered twice, and every move is a real door.
+    const seen = new Set();
+    let here = { ring: b.src.ring, sector: b.src.sector };
+    for (const m of game.applied) {
+      assert.ok(!seen.has(m.cell), `cell ${m.cell} was entered twice`);
+      seen.add(m.cell);
+      const edge = legalCandidates(b, here.ring, here.sector).find((c) => c.dir === m.dir);
+      assert.ok(edge, `'${m.dir}' from ${here.ring},${here.sector} is not a door`);
+      here = { ring: edge.ring, sector: edge.sector };
+    }
+  }
+  assert.ok(refusals > 0, 'the doubling back was refused and repaired somewhere in the sweep');
 });
 
-test('policy: a legal-but-already-walked first move is REVISITED, not illegal', async () => {
-  const b = makeChakraBoard('easy', lcg(71));
-  const base = scriptedTransport(shortestPick, { chainLimit: 1 });
-  // From the 2nd call on, answer move_1 with the direction back to the cell we
-  // just left: legal from here, but already walked, so it must be REFUSED as a
-  // revisit — never mislabelled as a wall.
-  let call = 0;
-  const t = {
-    async ask(args) {
-      const res = await base.ask.call(this, args);
-      if (call++ > 0) {
-        const st = args.state;
-        const visitedSet = new Set((st.visited || []).map((v) => `${v.ring},${v.sector}`));
-        visitedSet.delete(`${st.abhimanyu.ring},${st.abhimanyu.sector}`);
-        const bb = boardFromState(st);
-        const back = legalCandidates(bb, st.abhimanyu.ring, st.abhimanyu.sector)
-          .find((c) => visitedSet.has(`${c.ring},${c.sector}`));
-        if (back) res.body.answers.move_1 = { type: 'choice', choice: back.dir, probabilities: {}, confidence: 0.5 };
-      }
-      return res;
-    },
-  };
+test('policy: when the repair budget runs out, a doubling-back policy is reported as REVISITED', async () => {
+  const b = makeChakraBoard('easy', lcg(73));
+  const REV = { inward: 'outward', outward: 'inward', clockwise: 'counterclockwise', counterclockwise: 'clockwise' };
+  const first = legalCandidates(b, b.src.ring, b.src.sector)[0];
+  // Step 1 takes the first door; every later cell answers the way straight back
+  // to the cell just left. With no repairs allowed, the walk must stop there and
+  // say it doubled back — never claim a wall.
+  const t = scriptedTransport((bb, cell, moves) => {
+    if (cell.ring === b.src.ring && cell.sector === b.src.sector) return moves[0].dir;
+    const rev = REV[first.dir];
+    return moves.some((m) => m.dir === rev) ? rev : moves[0].dir;
+  });
+  const game = await runPolicyGame({ board: b, transport: t, maxRepairs: 0 });
+  assert.equal(game.moves.length, 1, 'the first move was played');
+  assert.equal(game.outcome, 'revisited', 'the second was refused as a doubling back');
+  assert.equal(game.reject, 'revisited');
+  assert.equal(game.rejectDir, REV[first.dir], 'and the refused direction is named');
+  assert.equal(game.repairs, 0, 'no repair was available');
+});
+
+test('policy: no usable answer for a cell is UNREADABLE, not stuck', async () => {
+  const b = makeChakraBoard('easy', lcg(7));
+  const t = scriptedTransport(shortestPick, { skipCells: 999 });
   const game = await runPolicyGame({ board: b, transport: t });
-  assert.equal(game.outcome, 'illegal', 'a readable but unwalkable move stops the walk');
-  assert.equal(game.reject, 'revisited', 'and the reason is a revisit, not a wall');
-  assert.ok(game.moves.length >= 1, 'the earlier moves were applied');
+  assert.equal(game.outcome, 'unparsed', 'nothing readable → unparsed');
+  assert.equal(game.reject, 'unreadable');
+  assert.equal(game.moves.length, 0);
 });
 
 test('policy: a transport error ends the run as an error', async () => {
@@ -350,14 +388,13 @@ test('policy: a transport error ends the run as an error', async () => {
 test('policy: exhausting the step budget never fires under fresh-only options', async () => {
   for (let i = 0; i < 10; i++) {
     const b = makeChakraBoard('easy', lcg(100 + i));
-    const t = scriptedTransport(shortestPick);
-    const game = await runPolicyGame({ board: b, transport: t });
+    const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
     assert.ok(game.outcome === 'reached' || game.outcome === 'stuck',
       `got ${game.outcome}, not exhausted`);
   }
 });
 
-test('policy: buildPolicyBody reports summed tokens', async () => {
+test('policy: buildPolicyBody reports summed tokens and the new counters', async () => {
   const b = makeChakraBoard('easy', lcg(29));
   const t = scriptedTransport(shortestPick, { tokensIn: 80, tokensOut: 20 });
   const game = await runPolicyGame({ board: b, transport: t });
@@ -365,41 +402,72 @@ test('policy: buildPolicyBody reports summed tokens', async () => {
   assert.equal(body.usage.input_tokens, 80 * game.calls.length);
   assert.equal(body.usage.output_tokens, 20 * game.calls.length);
   assert.ok(body.usage.output_tokens > 0);
+  assert.equal(body._cellsAsked, game.cellsAsked);
+  assert.equal(body._repairs, 0);
+  assert.ok(body._cellsAsked > 0, 'the record knows how many cells were asked about');
+});
+
+test('policy: the confidence/choice mismatch is recorded when a model undercuts itself', async () => {
+  const b = makeChakraBoard('easy', lcg(31));
+  // The field signature: confidence 0.30 while the chosen move was given 0.47.
+  const base = scriptedTransport(shortestPick);
+  const t = {
+    async ask(args) {
+      const res = await base.ask.call(this, args);
+      for (const id of Object.keys(res.body.answers)) {
+        const a = res.body.answers[id];
+        a.probabilities = { [a.choice]: 0.47 };
+        a.confidence = 0.30;
+      }
+      return res;
+    },
+  };
+  const game = await runPolicyGame({ board: b, transport: t });
+  assert.ok(game.mismatchCount > 0, 'the mismatch is counted');
+  assert.equal(game.mismatchCount, game.applied.length, 'every step is flagged');
 });
 
 // ---- 200-board regression runs -------------------------------------------
-test('regression: shortest-following mock reaches 100% of 200 boards per difficulty with stepAccuracy 1.0', async () => {
+test('regression: a correct policy reaches 200/200 boards per difficulty with stepAccuracy 1.0', async () => {
   for (const d of ['easy', 'medium', 'hard']) {
     let reached = 0;
     let allAcc1 = true;
     for (let i = 0; i < 200; i++) {
       const b = makeChakraBoard(d, lcg(200 + i));
-      const t = scriptedTransport(shortestPick);
-      const game = await runPolicyGame({ board: b, transport: t });
+      const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
       if (game.outcome !== 'reached') continue;
       reached++;
       const acc = computeStepAccuracy(b, game.moves, game.board.src);
       if (acc !== 1.0) allAcc1 = false;
     }
-    assert.equal(reached, 200, `${d}: 200/200 reached with shortest-following policy`);
+    assert.equal(reached, 200, `${d}: 200/200 reached`);
     assert.ok(allAcc1, `${d}: all stepAccuracy === 1.0`);
   }
 });
 
-test('regression: inward-greedy mock fails honestly with stepAccuracy < 1', async () => {
+test('regression: answering the same move everywhere solves strictly fewer mazes', async () => {
+  // The honest claim about the field failure: a model that repeats one move is
+  // worse than one that answers each cell on its merits. Not "it always fails" —
+  // an inward-biased walk reaches the centre sometimes — but strictly fewer.
   for (const d of ['easy', 'medium', 'hard']) {
-    let foundStuckOrUnparsed = false;
+    let repeated = 0;
+    let correct = 0;
     for (let i = 0; i < 50; i++) {
       const b = makeChakraBoard(d, lcg(500 + i));
-      const t = scriptedTransport(inwardGreedyPick);
-      const game = await runPolicyGame({ board: b, transport: t });
-      if (game.outcome === 'stuck' || game.outcome === 'unparsed') {
-        foundStuckOrUnparsed = true;
-        const acc = computeStepAccuracy(b, game.moves, game.board.src);
-        if (acc !== null) assert.ok(acc < 1, `${d}: stepAccuracy ${acc} < 1`);
+      const g1 = await runPolicyGame({ board: b, transport: scriptedTransport(alwaysInwardPick) });
+      const g2 = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
+      if (g1.outcome === 'reached') repeated++;
+      if (g2.outcome === 'reached') correct++;
+      // Whatever happens, the repeated-move model never steps through a wall.
+      let here = { ring: b.src.ring, sector: b.src.sector };
+      for (const dir of g1.moves) {
+        const edge = legalCandidates(b, here.ring, here.sector).find((c) => c.dir === dir);
+        assert.ok(edge, `${d}: '${dir}' is not a door`);
+        here = { ring: edge.ring, sector: edge.sector };
       }
     }
-    assert.ok(foundStuckOrUnparsed, `${d}: inward-greedy produces honest failures`);
+    assert.equal(correct, 50, `${d}: the correct policy reaches all 50`);
+    assert.ok(repeated < correct, `${d}: repeating one move solves strictly fewer (${repeated} vs ${correct})`);
   }
 });
 
@@ -413,12 +481,11 @@ test('obstacles off: a pure wall maze has no warrior cells, and still generates'
   }
 });
 
-test('obstacles off: the loop reaches the centre with the shortest policy', async () => {
+test('obstacles off: the walk reaches the centre with a correct policy', async () => {
   const b = makeChakraBoard('easy', lcg(13), { warriors: false });
-  const t = scriptedTransport(shortestPick);
-  const game = await runPolicyGame({ board: b, transport: t });
+  const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
   assert.equal(game.outcome, 'reached', 'a warrior-free maze is still winnable');
-  assert.equal(game.chainAgreement, 1, 'and consistent in one pass');
+  assert.equal(game.repairs, 0, 'and needs no repair');
 });
 
 test('presets: the three difficulties are distinct and labelled', () => {

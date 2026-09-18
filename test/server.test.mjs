@@ -138,6 +138,43 @@ test('missing questions object is a 400 bad_request', async () => {
   }
 });
 
+test('a policy payload is accepted without abhimanyu, and reaches the upstream', async () => {
+  const ctx = await startServer({});
+  try {
+    // A policy call names one cell per question, so it carries no position.
+    const policyState = { ...CH_PAYLOAD.state, task: 'chakravyuha_policy' };
+    delete policyState.abhimanyu;
+    delete policyState.visited;
+    delete policyState.step;
+    delete policyState.maxSteps;
+    const payload = {
+      state: policyState,
+      questions: { cell_3_0: { type: 'choice', instructions: 'Which move begins the route?', criteria: { inward: 'moves to ring 2, sector 0' } } },
+    };
+    const { status } = await postJev(ctx.base, payload);
+    assert.notEqual(status, 400, 'a policy payload is not a bad request');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+test('a policy payload with no centre is still a 400 bad_request', async () => {
+  const ctx = await startServer({});
+  try {
+    const policyState = { ...CH_PAYLOAD.state, task: 'chakravyuha_policy' };
+    delete policyState.abhimanyu;
+    delete policyState.centre;
+    const { status, body } = await postJev(ctx.base, {
+      state: policyState,
+      questions: { cell_3_0: { type: 'choice', criteria: { inward: 'x' } } },
+    });
+    assert.equal(status, 400);
+    assert.equal(body.error?.code, 'bad_request');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
 test('oversized body is a 413 payload_too_large', async () => {
   const ctx = await startServer({ maxBodyBytes: 512 });
   try {

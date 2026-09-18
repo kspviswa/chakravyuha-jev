@@ -233,7 +233,7 @@ export const RUNS_CAP = 500;
 export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 
 const RUN_MODES = ['live'];
-const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'exhausted', 'error'];
+const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
 
@@ -461,8 +461,14 @@ function isValidPayload(payload) {
   if (!(s.maze && typeof s.maze === 'object' && Number.isFinite(s.maze.rings) && s.maze.rings > 0)) return false;
   if (!(Array.isArray(s.open_radial) && s.open_radial.length > 0)) return false;
   if (!(Array.isArray(s.open_circ) && s.open_circ.length > 0)) return false;
-  if (!(s.abhimanyu && Number.isFinite(s.abhimanyu.ring) && Number.isFinite(s.abhimanyu.sector))) return false;
-  return !!(payload.questions && typeof payload.questions === 'object' && !Array.isArray(payload.questions));
+  if (!(payload.questions && typeof payload.questions === 'object' && !Array.isArray(payload.questions))) return false;
+  // A policy call asks about every cell at once, naming one cell per question,
+  // so there is no single position for it to carry. Every other call is about
+  // where Abhimanyu is standing, and must say so.
+  if (s.task === 'chakravyuha_policy') {
+    return Number.isFinite(s.centre?.ring) && Number.isFinite(s.centre?.sector);
+  }
+  return !!(s.abhimanyu && Number.isFinite(s.abhimanyu.ring) && Number.isFinite(s.abhimanyu.sector));
 }
 
 async function handleApiJev(req, res, config, rateLimited) {
@@ -498,7 +504,8 @@ async function handleApiJev(req, res, config, rateLimited) {
   if (!isValidPayload(payload)) {
     log({ ok: false, code: ERROR_CODES.BAD_REQUEST, bytes: raw.length, ms: Date.now() - t0 });
     return err(res, 400, ERROR_CODES.BAD_REQUEST,
-      'expected { state: { maze, open_radial, open_circ, abhimanyu, … }, questions: {...} }');
+      'expected { state: { maze, open_radial, open_circ, centre, … }, questions: {...} } ' +
+      '— with abhimanyu unless the task is chakravyuha_policy, which names a cell per question');
   }
 
   const questionCount = Object.keys(payload.questions).length;
