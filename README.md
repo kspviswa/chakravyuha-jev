@@ -88,12 +88,16 @@ The page refuses to overclaim. A flawless record under **20 confident steps** is
 the score actually **separates** high confidence from low — a score that ranked high below
 low would be worse than no score, and the page says so in as many words.
 
-Current state on our own history (45 recorded runs, 8 of which carry per-step confidence):
-**high 10/10, medium 14/18, low 17/25**. High beats low by 32 points, so the score does
-discriminate rather than being noise. But 10 confident steps is still short of the 20 the
-page wants before it will call the score reliable, so it says *suggestive, not yet
-conclusive* rather than declaring victory — which is exactly the behaviour we wanted from
-it.
+Current state on our own history — a snapshot, dated **2026-09-18**, over 25 runs and 388
+graded steps: **high 60/74 (81%), medium 80/128 (63%), low 107/186 (58%)**. High beats low
+by 24 points, so the score does separate the two rather than being noise.
+
+But 81% is not a promise. High confidence was **wrong 14 times**. The page says so in as
+many words — *"a confident move is not a guarantee; the score is a hint, not a promise"* —
+and that is the honest answer to the question we started with. It is also not the answer we
+were hoping for: an earlier, smaller sample showed high at 10/10 with no misses, and it
+would have been easy to stop there and call the score trustworthy. More runs made the
+picture worse and the write-up better.
 
 ## How a run works
 
@@ -319,6 +323,12 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
 - `history.test.mjs` — the calibration arithmetic itself, run rather than merely present:
   per-band tallies, silence excluded from both sides, and the refusal to call a small
   sample reliable.
+- `geometry.test.mjs` — **what the board actually draws**: that the centre is plotted
+  at the canvas centre (not at a negative radius on the far side of the board), and that
+  **no legal move's drawn segment crosses a drawn wall** — checked exhaustively over every
+  legal move on many boards, for both the static path and the sprite's interpolated hop.
+  These use the skin's own geometry helpers, so they check the canvas rather than a copy
+  of it.
 - `server` / `static` / `subpath` / `transport` / `debug-log` / `stats` / `icons` — the
   HTTP layer, the asset allowlist, the subpath proxy, the BYOK store, the redacted debug
   log, and the vendored Lucide geometry.

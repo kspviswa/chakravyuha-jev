@@ -39,6 +39,63 @@ const COL = {
   dim: '#8b93a7',
 };
 
+// ---- drawing geometry, kept pure so it can be tested without a canvas ------
+// The wall-crossing bug this guards against lived here, and a suite that never
+// asked where a cell was actually drawn could not see it.
+
+/** Canvas position of a cell's centre. `size` is the logical canvas width. */
+export function cellPoint(ring, sector, { R, S, size }) {
+  const maxR = size / 2 - 0.08 * size;
+  const r = centreRadius(ring, maxR, R);
+  const a = centreAngle(sector, S);
+  return { x: size / 2 + r * Math.sin(a), y: size / 2 - r * Math.cos(a) };
+}
+
+/**
+ * Every wall the board draws, as geometry rather than as path commands.
+ * A closed door between rings is an ARC at an integer radius spanning one
+ * sector; a closed door between sectors is a radial LINE at a sector boundary.
+ */
+export function wallGeometry(board, size) {
+  const { R, S } = board;
+  const maxR = size / 2 - 0.08 * size;
+  const unit = maxR / R;
+  const ang = (2 * Math.PI) / S;
+  const arcs = [];
+  const lines = [];
+  for (let i = 1; i < R; i++) {
+    for (let s = 0; s < S; s++) {
+      if (board.openRadial[i - 1][s]) continue;
+      arcs.push({ r: i * unit, a0: s * ang, a1: (s + 1) * ang });
+    }
+  }
+  for (let i = 1; i <= R; i++) {
+    for (let s = 0; s < S; s++) {
+      if (board.openCirc[i - 1][s]) continue;
+      lines.push({ r0: (i - 1) * unit, r1: i * unit, a: (s + 1) * ang });
+    }
+  }
+  return { arcs, lines };
+}
+
+/**
+ * Normalise a hop for interpolation.
+ *
+ * Ring 0 is the centre — a POINT, and its recorded sector 0 is a convention
+ * rather than a direction it can travel in. Sweeping that sector during a hop in
+ * or out of the centre swings the sprite sideways while it is still at a
+ * positive radius, cutting across the innermost ring's radial walls. So the
+ * centre borrows the sector of the cell it is joined to, and the hop stays
+ * purely RADIAL. Position is unaffected either way — radius 0 is the origin for
+ * every sector — so only the path taken to get there changes.
+ */
+export function radialHop(from, to) {
+  return {
+    from: from.ring === 0 ? { ring: 0, sector: to.sector } : from,
+    to: to.ring === 0 ? { ring: 0, sector: from.sector } : to,
+  };
+}
+
 export const chakraSkin = {
   id: 'chakravyuha',
   label: 'Chakravyuha',
@@ -201,7 +258,9 @@ export const chakraSkin = {
     // the list is index-aligned with the segments of `trail`.
     if (!Array.isArray(this.stepVerdicts)) this.stepVerdicts = [];
     this.stepVerdicts.push(h.verdict || null);
-    return this.animator.play([{ from, to, dir: h.dir, step: h.step, pauseAfter: HOP_BEAT }], { S: this.board.S }).then(() => {
+    // A hop in or out of the centre is kept radial — see radialHop().
+    const hop = radialHop(from, to);
+    return this.animator.play([{ from: hop.from, to: hop.to, dir: h.dir, step: h.step, pauseAfter: HOP_BEAT }], { S: this.board.S }).then(() => {
       this.pos = to;
       this.trail.push(to);
       this._publishHook();
@@ -275,13 +334,7 @@ export const chakraSkin = {
   },
 
   _cellPos(ring, sector) {
-    const width = this.canvas.width;
-    const pad = 0.08 * width;
-    const maxR = width / 2 - pad;
-    const R = this.board.R;
-    const r = centreRadius(ring, maxR, R);
-    const a = centreAngle(sector, this.board.S);
-    return { x: width / 2 + r * Math.sin(a), y: width / 2 - r * Math.cos(a) };
+    return cellPoint(ring, sector, { R: this.board.R, S: this.board.S, size: this.canvas.width });
   },
 
   _draw() {
@@ -291,11 +344,10 @@ export const chakraSkin = {
     const ctx = cvs.getContext('2d');
     if (!ctx) return;
     const b = this.board;
-    const R = b.R, S = b.S;
+    const R = b.R;
     const pad = 0.08 * width;
     const maxR = width / 2 - pad;
     const unit = maxR / R;
-    const ang = (2 * Math.PI) / S;
     const mid = width / 2;
 
     ctx.clearRect(0, 0, width, width);
@@ -310,31 +362,25 @@ export const chakraSkin = {
       ctx.stroke();
     }
 
+    const { arcs, lines } = wallGeometry(b, width);
+
     // radial walls: closed doors between ring i and i+1, drawn as arcs
     ctx.strokeStyle = COL.wallSoft;
     ctx.lineWidth = Math.max(1.5, 2 * this.dpr);
-    for (let i = 1; i < R; i++) {
-      for (let s = 0; s < S; s++) {
-        if (b.openRadial[i - 1][s]) continue;
-        ctx.beginPath();
-        ctx.arc(mid, mid, i * unit, s * ang, (s + 1) * ang);
-        ctx.stroke();
-      }
+    for (const w of arcs) {
+      ctx.beginPath();
+      ctx.arc(mid, mid, w.r, w.a0, w.a1);
+      ctx.stroke();
     }
 
     // circular walls: closed doors between sector s and s+1 in ring i
     ctx.strokeStyle = COL.wall;
     ctx.lineWidth = Math.max(1.5, 2 * this.dpr);
-    for (let i = 1; i <= R; i++) {
-      const r0 = (i - 1) * unit, r1 = i * unit;
-      for (let s = 0; s < S; s++) {
-        if (b.openCirc[i - 1][s]) continue;
-        const a = (s + 1) * ang;
-        ctx.beginPath();
-        ctx.moveTo(mid + r0 * Math.sin(a), mid - r0 * Math.cos(a));
-        ctx.lineTo(mid + r1 * Math.sin(a), mid - r1 * Math.cos(a));
-        ctx.stroke();
-      }
+    for (const w of lines) {
+      ctx.beginPath();
+      ctx.moveTo(mid + w.r0 * Math.sin(w.a), mid - w.r0 * Math.cos(w.a));
+      ctx.lineTo(mid + w.r1 * Math.sin(w.a), mid - w.r1 * Math.cos(w.a));
+      ctx.stroke();
     }
 
     // warriors: impassable dots (a swords glyph inside, when the dot is big)
