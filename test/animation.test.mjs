@@ -30,21 +30,33 @@ function boardFromState(state) {
   };
 }
 
-/** A fake Jev that plays perfectly (it is allowed to use the model). */
+/** A fake Jev that plays perfectly (it is allowed to use the model). It answers
+ *  the WHOLE chain — move_1 … move_K — in one response, the way the real
+ *  parallel fan-out does. */
 function perfectTransport() {
   return {
-    async ask({ state }) {
+    async ask({ state, questions }) {
       const b = boardFromState(state);
-      const here = state.abhimanyu;
-      const s = shortest(b, here, b.dst);
-      const next = s ? s.path[1] : null;
-      const choice = next ? (neighbours(b, here.ring, here.sector).find((n) => n.ring === next.ring && n.sector === next.sector)?.dir || 'inward') : 'inward';
+      const K = Object.keys(questions || {}).length || 1;
+      const answers = {};
+      let here = { ...state.abhimanyu };
+      for (let k = 1; k <= K; k++) {
+        if (here.ring === 0 && here.sector === 0) break;
+        const s = shortest(b, here, b.dst);
+        const next = s ? s.path[1] : null;
+        if (!next) break;
+        const dir = neighbours(b, here.ring, here.sector)
+          .find((n) => n.ring === next.ring && n.sector === next.sector)?.dir;
+        if (!dir) break;
+        answers[`move_${k}`] = { type: 'choice', choice: dir, probabilities: { [dir]: 0.95 }, confidence: 0.95 };
+        here = { ring: next.ring, sector: next.sector };
+      }
       return {
         ok: true,
         body: {
-          answers: { next_move: { type: 'choice', choice, probabilities: { [choice]: 0.95 }, confidence: 0.95 } },
+          answers,
           _ms: 5, _cost_usd: 0.0001,
-          _questions: 1,
+          _questions: K,
           usage: { input_tokens: 10, output_tokens: 2 },
         },
       };
@@ -188,23 +200,36 @@ test('invariant: a wandering policy animates ITS OWN route, never the optimum', 
   const optimal = shortest(b, b.src, b.dst);
 
   // A deliberately silly Jev: it prefers to curl around the ring and outward.
+  // It answers the whole chain, following its own preference at every step.
   const silly = {
-    async ask({ state }) {
+    async ask({ state, questions }) {
       const bb = boardFromState(state);
-      const cands = neighbours(bb, state.abhimanyu.ring, state.abhimanyu.sector);
-      const probs = {};
-      let best = null, bestP = 0;
-      for (const nb of cands) {
-        const p = nb.dir === 'counterclockwise' ? 0.9 : nb.dir === 'outward' ? 0.8 : 0.05;
-        probs[nb.dir] = p;
-        if (p > bestP) { bestP = p; best = nb.dir; }
+      const K = Object.keys(questions || {}).length || 1;
+      const answers = {};
+      let here = { ...state.abhimanyu };
+      const seen = new Set((state.visited || []).map((v) => `${v.ring},${v.sector}`));
+      for (let k = 1; k <= K; k++) {
+        const cands = neighbours(bb, here.ring, here.sector)
+          .filter((n) => !seen.has(`${n.ring},${n.sector}`));
+        if (cands.length === 0) break;
+        const probs = {};
+        let best = null, bestP = -1;
+        for (const nb of cands) {
+          const p = nb.dir === 'counterclockwise' ? 0.9 : nb.dir === 'outward' ? 0.8 : 0.05;
+          probs[nb.dir] = p;
+          if (p > bestP) { bestP = p; best = nb; }
+        }
+        if (!best) break;
+        answers[`move_${k}`] = { type: 'choice', choice: best.dir, probabilities: probs };
+        here = { ring: best.ring, sector: best.sector };
+        seen.add(`${here.ring},${here.sector}`);
       }
       return {
         ok: true,
         body: {
-          answers: { next_move: { type: 'choice', choice: best, probabilities: probs } },
+          answers,
           _ms: 3, _cost_usd: 0.0001,
-          _questions: 1,
+          _questions: K,
           usage: { input_tokens: 8, output_tokens: 2 },
         },
       };

@@ -32,28 +32,39 @@ x-jev-key: sk_…            (optional; the server-side env key is used when abs
 ```jsonc
 {
   "state": {
-    "task": "chakravyuha_step",
+    "task": "chakravyuha_path",
     "maze": { "rings": 6, "sectors": 16, "centre_gate_sector": 7 },
     "open_radial": [[true, false, …], …],   // index i-1 = wall between ring i and ring i+1
     "open_circ":   [[true, false, …], …],   // index i-1 = ring i; index s = sector s ↔ s+1
-    "warriors": [ { "ring": 3, "sector": 5 }, … ],
+    "warriors": [ { "ring": 3, "sector": 5 }, … ],   // empty when the obstacles toggle is off
     "abhimanyu": { "ring": 6, "sector": 2 },
     "centre": { "ring": 0, "sector": 0 },
     "visited": [ { "ring": 6, "sector": 2 }, … ],
-    "step": 3,
-    "maxSteps": 192,
+    "ask_moves": 64,
+    "start": { "ring": 6, "sector": 2 },
     "rules": "…plain English: the four moves, the two wall arrays, sector wrap…",
-    "objective": "…the first move of a shortest route from Abhimanyu to the centre…"
+    "objective": "…the quickest route from Abhimanyu to the centre, asked move by move…"
   },
   "questions": {
-    "next_move": {
+    "move_1": {
       "type": "choice",
-      "instructions": "Abhimanyu is on ring 3, sector 5. The centre is ring 0, sector 0. The doors that are open from here and have not been visited yet lead to: inward → ring 2, sector 5; clockwise → ring 3, sector 6. Which move is the FIRST move of a shortest route from Abhimanyu to the centre?",
-      "criteria": { "inward": "ring 3 → ring 2, same sector", "clockwise": "sector 5 → sector 6, same ring" }
-    }
+      "instructions": "Abhimanyu is on ring 3, sector 5. The centre is ring 0, sector 0. What is move 1 of the quickest route from Abhimanyu to the centre?",
+      "criteria": {
+        "inward": "one ring toward the centre (I → I-1), same sector",
+        "outward": "one ring away from the centre (I → I+1), same sector",
+        "clockwise": "one sector clockwise ((s+1) mod S), same ring",
+        "counterclockwise": "one sector counterclockwise ((s-1+S) mod S), same ring"
+      }
+    },
+    "move_2": { "type": "choice", "instructions": "… What is move 2 of the quickest route …", "criteria": { … } }
   }
 }
 ```
+
+Every question is answered against the same state in **one forward pass**, so
+`move_2` is independently computable. The answers are therefore not guaranteed
+consistent, and the shell checks the chain against the doors, applying only the
+moves that are legal and land on an unvisited cell.
 
 Validation is **shape-only**: `state` must be an object, `questions` a non-array object,
 and the question count must not exceed the per-request cap. A bad payload is a

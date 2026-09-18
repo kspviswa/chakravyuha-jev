@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { makeChakraBoard } from '../lib/chakra.js';
-import { buildPolicyChakraState, chakraQuestions, legalCandidates } from '../lib/jev.js';
+import { buildPolicyChakraState, chakraPathQuestions, PATH_ASK_MOVES } from '../lib/jev.js';
 
 const URL_BASE = process.argv[2] || 'http://127.0.0.1/abhimanyu/';
 const CHROME = process.env.CHROME_BIN
@@ -93,14 +93,13 @@ const main = async () => {
   // Build the payload with the app's OWN builders, so this proves the real
   // request shape passes the server's validator (not just a hand-written stub).
   const board = makeChakraBoard('easy');
-  const candidates = legalCandidates(board, board.src.ring, board.src.sector);
   const payload = {
     state: buildPolicyChakraState(board, {
       ring: board.src.ring, sector: board.src.sector,
-      visited: [board.src], step: 1, maxSteps: 2 * board.R * board.S,
+      visited: [board.src], askMoves: PATH_ASK_MOVES,
     }),
-    questions: chakraQuestions(board, candidates, {
-      ring: board.src.ring, sector: board.src.sector, step: 1, firstStep: true,
+    questions: chakraPathQuestions(board, {
+      ring: board.src.ring, sector: board.src.sector, askMoves: PATH_ASK_MOVES,
     }),
   };
 

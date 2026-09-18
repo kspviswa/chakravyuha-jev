@@ -10,11 +10,12 @@ animation: an animation that runs long must not inflate a Jev timing.
 |---|---|
 | **decision time · last step** | `_last_ms` — the wall time of the most recent `/api/jev` round trip. |
 | **total time** | Σ `_ms` over every call in the run. |
-| **calls made** | the number of `/api/jev` round trips. One call per step. |
+| **calls made** | the number of `/api/jev` round trips. **One call usually carries the whole route** — the loop only asks again when the chain broke. |
 | **total cost** | Σ `_cost_usd`, 6 dp. |
-| **questions per call** | always 1 — one `next_move` choice question per step. |
+| **questions per call** | `_questions` — the size of the fan-out. The loop asks for `move_1 … move_64` at once, so this is ~64, not 1. |
 | **steps vs shortest** | `steps / optimal`, where `optimal` is `shortest()`'s length. `unreachable` when there is none. |
 | **step accuracy** | **the fraction of steps that reduce the BFS distance to the centre by exactly 1.** A step is correct when `dist(before) === dist(after) + 1`. `null` when no steps were taken. |
+| **chain agreement** | `chainApplied / chainAnswered` — of every move Jev returned inside a chain, how many survived the check against the doors. **1.00 means the whole route came back consistent in one pass.** Below 1.00 measures how often parallel answers disagree with each other. |
 | **elapsed** | wall-clock time for the whole run, measured in the shell around the loop. |
 
 ### Efficiency (per step)

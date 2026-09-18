@@ -15,7 +15,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { createServer } from '../server.mjs';
 import { makeChakraBoard } from '../lib/chakra.js';
-import { buildPolicyChakraState, chakraQuestions, legalCandidates } from '../lib/jev.js';
+import { buildPolicyChakraState, chakraPathQuestions, legalCandidates, PATH_ASK_MOVES } from '../lib/jev.js';
 import { shortest } from '../lib/chakra.js';
 
 const CHROME =
@@ -40,9 +40,10 @@ let failures = 0;
 
 // ------------------------------------------------- a mock Jev (no stub, ever)
 // The app has no local solver, so the harness stands up a real HTTP upstream
-// and points the shim at it. It answers the one `next_move` question per step
-// by looking up the shortest route — which is allowed here because this file is
-// the *test model*, not the app. The app itself never searches.
+// and points the shim at it. It answers the WHOLE chain — move_1 … move_K — in
+// one response, the way the real parallel fan-out does, by walking the quickest
+// route — which is allowed here because this file is the *test model*, not the
+// app. The app itself never searches.
 function startMockJev() {
   let calls = 0;
   const server = http.createServer((req, res) => {
@@ -60,27 +61,33 @@ function startMockJev() {
           openRadial: st.open_radial, openCirc: st.open_circ, warriors: st.warriors || [],
           src: st.abhimanyu, dst: { ring: 0, sector: 0 },
         };
-        const here = st.abhimanyu;
-        const visited = st.visited || [];
-        const visitedSet = new Set(visited.map((v) => `${v.ring},${v.sector}`));
-        const candidates = legalCandidates(board, here.ring, here.sector);
-        const fresh = candidates.filter((c) => !visitedSet.has(`${c.ring},${c.sector}`));
-        // The first move of a shortest route. NB: shortest() returns path cells
-        // as { ring, sector } with NO `dir` field — the direction must be read
-        // back off the fresh candidate that lands on that cell. (Reading
-        // `next.dir` directly yields undefined, which the app then honestly
-        // reports as UNPARSED.)
-        const s = shortest(board, here, board.dst);
-        const next = s ? s.path[1] : null;
-        const chosen = next
-          ? fresh.find((c) => c.ring === next.ring && c.sector === next.sector)
-          : null;
-        const choice = chosen?.dir ?? fresh[0]?.dir ?? 'inward';
-        answers.next_move = {
-          type: 'choice', choice,
-          probabilities: { [choice]: 0.95 },
-          confidence: 0.95,
-        };
+        const asked = Object.keys(payload.questions || {}).length || 1;
+        let here = { ...st.abhimanyu };
+        const visitedSet = new Set((st.visited || []).map((v) => `${v.ring},${v.sector}`));
+        for (let k = 1; k <= asked; k++) {
+          if (here.ring === 0 && here.sector === 0) break;
+          const fresh = legalCandidates(board, here.ring, here.sector)
+            .filter((c) => !visitedSet.has(`${c.ring},${c.sector}`));
+          if (fresh.length === 0) break;
+          // NB: shortest() returns path cells as { ring, sector } with NO `dir`
+          // field — the direction must be read back off the fresh candidate
+          // that lands on that cell. (Reading `next.dir` directly yields
+          // undefined, which the app then honestly reports as UNPARSED.)
+          const s = shortest(board, here, board.dst);
+          const next = s ? s.path[1] : null;
+          const chosen = next
+            ? fresh.find((c) => c.ring === next.ring && c.sector === next.sector)
+            : null;
+          const pick = chosen ?? fresh[0];
+          if (!pick) break;
+          answers[`move_${k}`] = {
+            type: 'choice', choice: pick.dir,
+            probabilities: { [pick.dir]: 0.95 },
+            confidence: 0.95,
+          };
+          here = { ring: pick.ring, sector: pick.sector };
+          visitedSet.add(`${here.ring},${here.sector}`);
+        }
       } catch { /* leave answers empty */ }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
@@ -289,6 +296,23 @@ async function runViewport(cdp, base, vp, route) {
   if (afterNew.verdict) throw new Error('drawing a new maze produced a verdict — it solved something');
   if (afterNew.steps !== 0) throw new Error('a new maze kept the old trail');
   console.log('  redraw → fresh maze, trail cleared, still unsolved: ok');
+
+  // ---- the obstacle toggle: warriors off is a pure wall maze --------------
+  const withWarriors = await evaluate(cdp, `(() => { const r = window.__chakraLastRender; return r ? r.warriors.length : null; })()`);
+  if (!(withWarriors > 0)) throw new Error(`obstacles on should draw warriors, got ${withWarriors}`);
+  await evaluate(cdp, `(() => { const b = document.getElementById('maze-warriors'); b.checked = false; b.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const noWarriors = await evaluate(cdp, `(() => { const r = window.__chakraLastRender; return r ? r.warriors.length : null; })()`);
+  if (noWarriors !== 0) throw new Error(`obstacles off must leave no warrior cells, got ${noWarriors}`);
+  const offState = await evaluate(cdp, `(() => { const r = window.__chakraLastRender; return r ? { verdict: r.verdict, steps: r.trailCells.length - 1 } : null; })()`);
+  if (offState.verdict) throw new Error('toggling obstacles solved something');
+  if (offState.steps !== 0) throw new Error('toggling obstacles kept the old trail');
+  console.log(`  obstacles toggle: ${withWarriors} warriors on → 0 off, still unsolved: ok`);
+  // back on, so the run below is the real game
+  await evaluate(cdp, `(() => { const b = document.getElementById('maze-warriors'); b.checked = true; b.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const backOn = await evaluate(cdp, `(() => { const r = window.__chakraLastRender; return r ? r.warriors.length : null; })()`);
+  if (!(backOn > 0)) throw new Error(`obstacles back on should draw warriors, got ${backOn}`);
 
   // back to easy for the animated run
   await evaluate(cdp, `document.querySelector('.diff-btn[data-diff="easy"]').click()`);

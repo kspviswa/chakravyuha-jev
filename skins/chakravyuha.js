@@ -52,6 +52,7 @@ export const chakraSkin = {
       <div class="cta-row">
         <button id="maze-new" class="ghost" type="button">⟳ New maze</button>
         <label class="check"><input type="checkbox" id="maze-instant" /> instant moves</label>
+        <label class="check"><input type="checkbox" id="maze-warriors" /> obstacles (warriors)</label>
       </div>`;
     container.appendChild(wrap);
 
@@ -76,6 +77,15 @@ export const chakraSkin = {
     const instantBox = wrap.querySelector('#maze-instant');
     instantBox.checked = this.instant;
     instantBox.addEventListener('change', () => this.setInstant(instantBox.checked));
+
+    // Obstacle toggle: warriors on (the real game) or off (a pure wall maze, so
+    // the only thing that can stop a run is a wall). Redraws immediately.
+    const warriorBox = wrap.querySelector('#maze-warriors');
+    warriorBox.checked = this.obstacles;
+    warriorBox.addEventListener('change', () => {
+      this.setObstacles(warriorBox.checked);
+      this.newBoard();
+    });
 
     this.animator = new Animator({
       duration: STEPS_PER_HOP,
@@ -111,6 +121,12 @@ export const chakraSkin = {
     if (this.animator) this.animator.instant = this.instant;
   },
 
+  /** Obstacles on/off. Persisted so a reload keeps the user's choice. */
+  setObstacles(on) {
+    this.obstacles = !!on;
+    try { localStorage.setItem('jev.obstacles', this.obstacles ? 'on' : 'off'); } catch { /* ignore */ }
+  },
+
   /**
    * 0 → snap between cells (no tween, no burst). Used by prefers-reduced-motion
    * and the ?anim=0 test hook so the harness is deterministic.
@@ -133,7 +149,7 @@ export const chakraSkin = {
   },
 
   newBoard() {
-    this.board = makeChakraBoard(this.difficulty || 'easy');
+    this.board = makeChakraBoard(this.difficulty || 'easy', Math.random, { warriors: this.obstacles !== false });
     this.pos = { ring: this.board.src.ring, sector: this.board.src.sector };
     this.trail = [this.board.src];
     this.verdict = null;
@@ -469,7 +485,7 @@ export const chakraSkin = {
       el.innerHTML =
         `<span class="k">${escapeText(where)}</span>` +
         `<span class="k">${steps} step${steps === 1 ? '' : 's'}</span>` +
-        `<span class="k">${b.warriors.length} warriors avoided</span>` +
+        (b.warriors.length > 0 ? `<span class="k">${b.warriors.length} warriors avoided</span>` : '<span class="k">no obstacles</span>') +
         (outcome ? `<span class="k ${v.reached ? 'good' : 'bad'}">${outcome}</span>` : '');
     }
   }

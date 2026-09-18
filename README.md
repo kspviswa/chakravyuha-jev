@@ -10,28 +10,42 @@ is applied **verbatim**. The app then draws the shortest route only after the ru
 and Abhimanyu **walks** that route one animated hop at a time.
 
 ```
-    difficulty (easy / medium / hard) + 🎲 New maze
+    difficulty (easy / medium / hard) + 🎲 New maze + obstacles toggle
              │
              ▼
-    state = { maze, open_radial, open_circ, warriors, abhimanyu, centre, visited, step, maxSteps }
+    state = { maze, open_radial, open_circ, warriors, abhimanyu, centre,
+              visited, ask_moves, start, rules, objective }
              +
-    questions = { next_move: { type: 'choice', instructions: '...', criteria: {...} } }
-             │                       ← one typed choice per step
+    questions = { move_1: {…}, move_2: {…}, … move_64: {…} }
+             │        ← the WHOLE route, one typed choice per move
              ▼
-    POST → /api/jev → TypeSafe → typed answer + probabilities
+    POST → /api/jev → TypeSafe → every answer in ONE forward pass
              │
              ▼
-    app applies Jev's answer → Abhimanyu ANIMATES that one hop → ask again
-             │
+    app CHECKS the chain against the doors → applies the moves that survive
+             │   → Abhimanyu ANIMATES them → ask again from where it stopped
              ▼
     shortest route drawn only after the run ends, to compare
              │
              ▼
-    meters: outcome · steps vs shortest · step accuracy · elapsed · cost
+    meters: outcome · steps vs shortest · step accuracy · chain agreement · cost
              │
              ▼
     the run is recorded server-side, so history accumulates across sessions
 ```
+
+**Why the whole route in one call.** Jev answers every question in one forward pass
+against a shared state, and adding questions barely moves the latency. Asking one move
+per round trip made a 17-move run cost 17 calls, each dependent on the last. Asking
+`move_1 … move_K` makes it cost **one** call. The answers are independent, so the chain
+is checked against the real doors and cut at the first move that is illegal, blocked or
+already visited; if the centre is still not reached the loop asks again from where it
+stopped. The ratio of moves that survived is recorded as **chain agreement** — that is
+the calibration signal, and it is the point of the experiment.
+
+**The obstacles toggle** turns the warriors off, leaving a pure wall maze. The only
+thing that can stop a run is then a wall, which separates "can Jev compute a route"
+from "can Jev avoid a dead end".
 
 ## The three difficulties
 
@@ -191,7 +205,7 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
 ## The request/response contract
 
 - `POST /api/jev` with `{ state, questions }` — a polar chakravyuha state.
-  `questions` contains exactly one `next_move` choice question per step.
+  `questions` contains `move_1 … move_K`, one choice question per move of the route.
 - Returns `{ answers, usage, _ms, _cost_usd, _questions, mode }`; errors are always
   `{ error: { code, message } }` — never a raw upstream blob.
 - `GET /api/health` → `{ ok: true, mode: "proxy", hasEnvKey: bool }`.

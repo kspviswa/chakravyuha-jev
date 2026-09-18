@@ -19,7 +19,7 @@ import {
 } from './lib/transport.js';
 import {
   askJev, runPolicyGame, buildPolicyBody,
-  buildPolicyChakraState,
+  buildPolicyChakraState, chakraPathQuestions, PATH_ASK_MOVES,
 } from './lib/jev.js';
 import { boardHash, computeStepAccuracy, optimalRoute } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
@@ -30,6 +30,7 @@ const transport = createTransport({ base: BASE, storage });
 
 const DIFF_STORAGE = 'jev.difficulty';
 const INSTANT_STORAGE = 'jev.instant';
+const OBSTACLE_STORAGE = 'jev.obstacles';
 
 const currentSkin = chakraSkin;
 
@@ -108,12 +109,15 @@ async function askPolicy(key) {
   currentSkin.begin();
   const board = currentSkin.board;
   $('state-pre').textContent = JSON.stringify({
-    loop: 'ask → apply → repeat',
-    cap: `maxSteps = 2 × R × S = ${2 * board.R * board.S}`,
+    loop: 'ask for the whole route → check it → ask again if it broke',
+    obstacles: currentSkin.obstacles !== false ? 'on (warriors)' : 'off (pure wall maze)',
     sampleState: buildPolicyChakraState(board, {
       ring: board.src.ring, sector: board.src.sector,
-      visited: [board.src], step: 1, maxSteps: 2 * board.R * board.S,
+      visited: [board.src], askMoves: PATH_ASK_MOVES,
     }),
+    sampleQuestions: Object.keys(chakraPathQuestions(board, {
+      ring: board.src.ring, sector: board.src.sector, askMoves: 3,
+    })),
   }, null, 2);
 
   const wall0 = performance.now();
@@ -162,8 +166,8 @@ async function askPolicy(key) {
 
 function renderAnswers(res) {
   const entries = Object.entries(res.answers || {});
-  const moves = entries.filter(([k]) => k.startsWith('step_')).sort((a, b) => num(a[0]) - num(b[0]));
-  const meta = entries.filter((k) => !k[0].startsWith('step_'));
+  const moves = entries.filter(([k]) => k.startsWith('move_')).sort((a, b) => num(a[0]) - num(b[0]));
+  const meta = entries.filter((k) => !k[0].startsWith('move_'));
 
   const row = (id, val, conf, low) => `
     <div class="ans ${low ? 'low' : ''}">
@@ -184,7 +188,7 @@ function renderAnswers(res) {
     html += row(id, a.choice, p !== undefined ? p.toFixed(2) : '', (a.confidence ?? 1) < 0.6);
   }
   if (moves.length > shown.length) {
-    html += `<div class="ans"><span class="id">…</span><span class="val">${moves.length - shown.length} more step questions</span><span class="conf"></span></div>`;
+    html += `<div class="ans"><span class="id">…</span><span class="val">${moves.length - shown.length} more moves</span><span class="conf"></span></div>`;
   }
   const box = $('answers');
   box.classList.remove('empty');
@@ -218,6 +222,15 @@ function renderMeters(body, game, v, elapsedMs) {
   $('m-msstep').textContent = n && Number.isFinite(game.totalMs) ? `${fmt(game.totalMs / n)} ms` : '—';
   $('m-qstep').textContent = n && Number.isFinite(game.totalQuestions) ? fmt(game.totalQuestions / n, 2) : '—';
   $('m-cstep').textContent = n ? fmt(game.calls.length / n, 2) : '—';
+  // Parallel-path calibration: how much of each returned chain survived the
+  // check against the real doors.
+  const chainEl = $('m-chain');
+  if (chainEl) {
+    const ca = game.chainAgreement;
+    chainEl.textContent = ca === null || ca === undefined
+      ? '—'
+      : `${game.chainApplied}/${game.chainAnswered} (${Math.round(ca * 100)}%)`;
+  }
   $('m-tstep').textContent = n && Number.isFinite(game.totalTokensIn) && Number.isFinite(game.totalTokensOut)
     ? `${fmt(game.totalTokensIn / n, 0)} / ${fmt(game.totalTokensOut / n, 0)}`
     : '—';
@@ -239,9 +252,12 @@ function setRunOutcome(game, v) {
     el.textContent = `${prefix} · reached the centre${optimalNote} · ${game.steps} steps`;
   } else if (game.outcome === 'stuck') {
     el.classList.add('stuck');
+    // Honest wording: running out of UNVISITED moves is not being trapped. The
+    // centre is normally still reachable — the walk would just have to retrace,
+    // which the fresh-only rule forbids.
     const optLen = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
-      ? `the shortest route from there was ${v.optimalFromHere} moves`
-      : '';
+      ? `no unvisited move left; the centre was still ${v.optimalFromHere} moves away`
+      : 'no unvisited move left';
     const correctSteps = Math.round((game._stepAccuracy || 0) * game.steps);
     el.textContent = `${prefix} · STUCK at step ${game.steps} · ${optLen} · ${correctSteps}/${game.steps} steps on a shortest route`;
   } else if (game.outcome === 'unparsed') {
@@ -295,6 +311,11 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     correctSteps: stepAccuracy !== null ? Math.round(stepAccuracy * steps) : null,
     moves: game ? game.moves : [],
     elapsedMs,
+    obstacles: currentSkin.obstacles !== false,
+    pathCalls: game ? game.calls.length : 1,
+    chainAnswered: game ? game.chainAnswered : null,
+    chainApplied: game ? game.chainApplied : null,
+    chainAgreement: game ? game.chainAgreement : null,
     model: body.model || null,
   };
 }
@@ -324,6 +345,10 @@ function loadInstant() {
   try { return storage.getItem(INSTANT_STORAGE) === '1'; } catch { return false; }
 }
 
+function loadObstacles() {
+  try { return storage.getItem(OBSTACLE_STORAGE) !== 'off'; } catch { return true; }
+}
+
 // ------------------------------------------------------------------- boot
 $('ask').addEventListener('click', ask);
 $('export-btn').addEventListener('click', () => {
@@ -343,6 +368,7 @@ $('cancel').addEventListener('click', () => {
 refreshKeyUI();
 currentSkin.setInstant(loadInstant());
 currentSkin.setDifficulty(loadDifficulty());
+currentSkin.setObstacles(loadObstacles());
 currentSkin.mount({ container: $('skin-controls') });
 $('board-caption').innerHTML = currentSkin.caption();
 
