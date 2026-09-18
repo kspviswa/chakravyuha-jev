@@ -166,6 +166,12 @@ function sortValue(run, col) {
     case 'mode': return run.mode;
     case 'outcome': return run.outcome;
     case 'steps': return Number.isFinite(run.steps) ? run.steps : -1;
+    // Accuracy and confidence were falling through to 0, so clicking those
+    // headers did nothing. Runs that never recorded the metric sort as -1 —
+    // absent is not the same as zero.
+    case 'accuracy': return Number.isFinite(run.stepAccuracy) ? run.stepAccuracy : -1;
+    case 'confidence': return Number.isFinite(run.confidentSteps) && run.steps
+      ? run.confidentSteps / run.steps : -1;
     case 'totalMs': return Number.isFinite(run.totalMs) ? run.totalMs : -1;
     case 'board': return String(run.rings || '');
     default: return 0;
@@ -196,6 +202,20 @@ function outcomeHtml(run) {
   return `<span class="verdict ${ok ? 'ok' : 'no'}">${escapeHtml(run.outcome)}</span>`;
 }
 
+/** "7/11" — steps taken with a clear read, out of all steps. Blank for runs
+ *  recorded before confidence was captured. */
+/** A 0..1 rate as a percentage, for the confidence tiles. */
+function pctOf(v) {
+  return v === null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(0)}%`;
+}
+
+function confidenceCell(r) {
+  const n = Number.isFinite(r.confidentSteps) ? r.confidentSteps : null;
+  const total = Number.isFinite(r.steps) ? r.steps : null;
+  if (n === null || !total) return '<span class="dim">—</span>';
+  return `${n}/${total}`;
+}
+
 function tableRows(runs) {
   const sorted = [...runs].sort(compare);
   return sorted.map((r) => `
@@ -206,6 +226,7 @@ function tableRows(runs) {
         <td>${outcomeHtml(r)}</td>
         <td>${stepsCell(r)}</td>
         <td>${display(r.stepAccuracy, 'sc')}</td>
+        <td title="steps taken with a clear read, of all steps">${confidenceCell(r)}</td>
         <td>${display(score(r.totalMs), 'ms')} ms</td>
         <td>${boardCell(r)}</td>
       </tr>`).join('');
@@ -233,12 +254,14 @@ function csvEscape(v) {
 
 function csvRows(runs) {
   const head = ['at', 'difficulty', 'mode', 'outcome', 'steps', 'optimalSteps',
-    'stepAccuracy', 'correctSteps', 'totalMs', 'msPerStep', 'lastStepMs',
+    'stepAccuracy', 'correctSteps', 'confidentSteps', 'unsureSteps', 'mediumSteps',
+    'totalMs', 'msPerStep', 'lastStepMs',
     'calls', 'questions', 'tokensIn', 'tokensOut', 'costUsd',
     'rings', 'sectors', 'boardHash', 'model', 'id'];
   const rows = [...runs].sort(compare).map((r) => [
     r.at, r.difficulty, r.mode, r.outcome, r.steps, r.optimalSteps,
-    r.stepAccuracy, r.correctSteps, r.totalMs, msPerStep(r), r.lastStepMs,
+    r.stepAccuracy, r.correctSteps, r.confidentSteps, r.unsureSteps, r.mediumSteps,
+    r.totalMs, msPerStep(r), r.lastStepMs,
     r.calls, r.questions, r.tokensIn, r.tokensOut, r.costUsd,
     r.rings, r.sectors, r.boardHash, r.model, r.id,
   ]);
@@ -289,6 +312,11 @@ function cumulativeHtml(runs) {
   };
 
   const opt = summarize(runs.map((r) => (Number.isFinite(r.stepAccuracy) ? r.stepAccuracy : null)));
+  // Confidence as its own rate: of every step these runs took, how many came
+  // with a clear read. Runs from before confidence was captured contribute
+  // nothing — they are excluded, not counted as zero.
+  const confSteps = summarize(runs.map((r) => (Number.isFinite(r.confidentSteps) && r.steps
+    ? r.confidentSteps / r.steps : null)));
 
   const tiles = [
     ['runs recorded', String(totalRuns)],
@@ -308,6 +336,11 @@ function cumulativeHtml(runs) {
     ['step accuracy', opt.n < 2
       ? `${opt.mean === null ? '—' : opt.mean.toFixed(3)} <em>(n&lt;2)</em>`
       : `${opt.mean.toFixed(3)} ± ${opt.stddev.toFixed(3)} <em>(n=${opt.n})</em>`],
+    ['confident steps', confSteps.n === 0
+      ? '<em>not captured yet</em>'
+      : confSteps.n < 2
+        ? `${pctOf(confSteps.mean)} <em>(n&lt;2)</em>`
+        : `${pctOf(confSteps.mean)} ± ${pctOf(confSteps.stddev)} <em>(n=${confSteps.n})</em>`],
   ];
 
   return `

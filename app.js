@@ -226,7 +226,9 @@ function renderMeters(body, game, v, elapsedMs) {
 
   $('m-decision').textContent = `${game.lastMs ?? '?'} ms`;
   $('m-total').textContent = `${game.totalMs ?? '?'} ms`;
-  $('m-calls').textContent = String(game.calls.length);
+  $('m-calls').textContent = game.repairs
+    ? `${game.calls.length} · ${game.repairs} repair${game.repairs === 1 ? '' : 's'}`
+    : String(game.calls.length);
   $('m-cost').textContent = Number.isFinite(game.totalCostUsd) ? `$${game.totalCostUsd.toFixed(6)}` : '—';
   $('m-q').textContent = String(game.totalQuestions ?? '—');
   $('m-steps').textContent = optimal === null
@@ -239,6 +241,8 @@ function renderMeters(body, game, v, elapsedMs) {
   } else {
     $('m-stepacc').textContent = '—';
   }
+
+  setConfidence(game);
 
   const n = steps > 0 ? steps : null;
   $('m-msstep').textContent = n && Number.isFinite(game.totalMs) ? `${fmt(game.totalMs / n)} ms` : '—';
@@ -267,50 +271,67 @@ function setRunOutcome(game, v) {
   if (!el || !game) { if (el) el.hidden = true; return; }
   el.hidden = false;
   el.classList.remove('reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error');
-  const calls = Array.isArray(game.calls) ? game.calls.length : 0;
-  const rep = game.repairs ? ` · ${game.repairs} repair${game.repairs === 1 ? '' : 's'}` : '';
-  // Confidence is a signal in its own right, so it appears on EVERY outcome, not
-  // only on success. "y of x steps confident" is the second number a run is read
-  // by — a centre reached in 9 hesitant moves is a different result from one
-  // reached in 9 certain ones.
-  const bc = game.bandCounts;
-  const conf = bc && bc.total
-    ? ` · ${bc.high}/${bc.total} steps confident${bc.low ? ` · ${bc.low} unsure` : ''}`
-    : '';
-  const prefix = `${calls} call${calls === 1 ? '' : 's'}${rep}${conf}`;
+  // The verdict, and the step count. Calls, repairs and accuracy are meters in
+  // the Numbers block — the card says WHAT happened, not everything about it.
   if (game.outcome === 'reached') {
     el.classList.add('reached');
-    const optimalNote = v && v.optimal !== null ? ` · ${v.optimal} optimal` : '';
-    el.textContent = `${prefix} · reached the centre${optimalNote} · ${game.steps} steps`;
+    const optimalNote = v && v.optimal !== null ? ` · optimal ${v.optimal}` : '';
+    el.textContent = `Reached the centre · ${game.steps} steps${optimalNote}`;
   } else if (game.outcome === 'stuck') {
     el.classList.add('stuck');
     // Honest wording: running out of UNVISITED moves is not being trapped. The
     // centre is normally still reachable — the walk would just have to retrace,
     // which the fresh-only rule forbids.
     const why = game.reject === 'nowhere' ? 'no door opens from here' : 'no unvisited move left';
-    const optLen = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
-      ? `${why}; the centre was still ${v.optimalFromHere} moves away`
-      : why;
-    const correctSteps = Math.round((game._stepAccuracy || 0) * game.steps);
-    el.textContent = `${prefix} · STUCK at step ${game.steps} · ${optLen} · ${correctSteps}/${game.steps} steps on a shortest route`;
+    const away = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
+      ? ` · centre still ${v.optimalFromHere} moves away`
+      : '';
+    el.textContent = `Stuck at step ${game.steps} — ${why}${away}`;
   } else if (game.outcome === 'unparsed') {
     el.classList.add('unparsed');
-    el.textContent = `${prefix} · UNREADABLE — Jev returned no usable move for ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}.`;
+    el.textContent = `Unreadable — no usable move for ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
   } else if (game.outcome === 'revisited') {
     el.classList.add('illegal');
     const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-    el.textContent = `${prefix} · DOUBLED BACK — the policy sent '${game.rejectDir}' from ${where}, onto a cell already walked, and the repair budget was spent.`;
+    el.textContent = `Doubled back — '${game.rejectDir}' from ${where} onto a cell already walked, and the repair budget was spent`;
   } else if (game.outcome === 'illegal') {
     el.classList.add('illegal');
     const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-    el.textContent = `${prefix} · UNPLAYABLE — Jev answered '${game.rejectDir}' at ${where}, but no door opens that way.`;
+    el.textContent = `Unplayable — Jev answered '${game.rejectDir}' at ${where}, but no door opens that way`;
   } else if (game.outcome === 'exhausted') {
     el.classList.add('exhausted');
-    el.textContent = `${prefix} · EXHAUSTED — hit the ${game.maxSteps}-step cap without reaching the centre.`;
+    el.textContent = `Exhausted — hit the ${game.maxSteps}-step cap without reaching the centre`;
   } else {
     el.classList.add('error');
-    el.textContent = `${prefix} · error — the run could not finish.`;
+    el.textContent = 'Error — the run could not finish.';
   }
+}
+
+// ------------------------------------------------------------ confidence
+// One number and one bar: "y of x steps" taken with a clear read. The bands are
+// captured per step in lib/jev.js; this only draws them.
+function setConfidence(game) {
+  const block = $('conf-block');
+  if (!block) return;
+  const bc = game && game.bandCounts;
+  if (!bc || !bc.total) { block.hidden = true; return; }
+  block.hidden = false;
+  const known = bc.high + bc.medium + bc.low;
+  $('m-conf').textContent = `${bc.high} of ${bc.total} step${bc.total === 1 ? '' : 's'}`;
+  const bar = $('conf-bar');
+  bar.textContent = '';
+  for (const band of ['high', 'medium', 'low']) {
+    if (!bc[band]) continue;
+    const seg = document.createElement('i');
+    seg.className = band;
+    seg.style.flex = String(bc[band]);
+    bar.appendChild(seg);
+  }
+  const parts = [`${bc.high} confident`, `${bc.medium} cautious`, `${bc.low} unsure`];
+  if (bc.unknown) parts.push(`${bc.unknown} no confidence reported`);
+  $('conf-note').textContent = known < bc.total
+    ? `${parts.join(' · ')} — the bar covers the ${known} steps that reported one.`
+    : parts.join(' · ');
 }
 
 // ------------------------------------------------------- run recording

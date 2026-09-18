@@ -67,20 +67,36 @@
       <span class="ec-hint" id="error-hint"></span>
     </div>
 
-    <div class="meters">
-      <div class="meter"><span class="m-label">decision time · last step</span><span class="m-val" id="m-decision">—</span></div>
-      <div class="meter"><span class="m-label">total time</span><span class="m-val" id="m-total">—</span></div>
-      <div class="meter"><span class="m-label">calls made</span><span class="m-val" id="m-calls">—</span></div>
-      <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
-      <div class="meter"><span class="m-label">questions per call</span><span class="m-val" id="m-q">—</span></div>
-      <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
-      <div class="meter"><span class="m-label">step accuracy</span><span class="m-val" id="m-stepacc">—</span></div>
-      <div class="meter"><span class="m-label">policy used · applied / answered</span><span class="m-val" id="m-chain">—</span></div>
-      <div class="meter"><span class="m-label">elapsed (wall clock)</span><span class="m-val" id="m-elapsed">—</span></div>
+    <!-- Two numbers only: was the route good, and was Jev sure of it. Everything
+         else lives behind "Numbers" — the panel was a wall of metrics. -->
+    <div class="block">
+      <h2>The run</h2>
+      <div class="meters key">
+        <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
+        <div class="meter"><span class="m-label">step accuracy</span><span class="m-val" id="m-stepacc">—</span></div>
+      </div>
+      <div class="conf" id="conf-block" hidden>
+        <div class="conf-head">
+          <span class="m-label">confidence</span>
+          <span class="m-val" id="m-conf">—</span>
+        </div>
+        <div class="conf-bar" id="conf-bar"></div>
+        <div class="conf-note" id="conf-note"></div>
+      </div>
     </div>
 
-    <div class="block">
-      <h2>Efficiency <em>(per step)</em></h2>
+    <details class="block">
+      <summary>Numbers <em>(time, calls, tokens, cost)</em></summary>
+      <div class="meters">
+        <div class="meter"><span class="m-label">decision time · last step</span><span class="m-val" id="m-decision">—</span></div>
+        <div class="meter"><span class="m-label">total time</span><span class="m-val" id="m-total">—</span></div>
+        <div class="meter"><span class="m-label">calls made</span><span class="m-val" id="m-calls">—</span></div>
+        <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
+        <div class="meter"><span class="m-label">questions per call</span><span class="m-val" id="m-q">—</span></div>
+        <div class="meter"><span class="m-label">policy used · applied / answered</span><span class="m-val" id="m-chain">—</span></div>
+        <div class="meter"><span class="m-label">elapsed (wall clock)</span><span class="m-val" id="m-elapsed">—</span></div>
+      </div>
+      <h2 style="margin-top:14px">Per step</h2>
       <div class="meters efficiency">
         <div class="meter"><span class="m-label">ms per step</span><span class="m-val" id="m-msstep">—</span></div>
         <div class="meter"><span class="m-label">questions per step</span><span class="m-val" id="m-qstep">—</span></div>
@@ -88,7 +104,7 @@
         <div class="meter"><span class="m-label">tokens per step · in / out</span><span class="m-val" id="m-tstep">—</span></div>
         <div class="meter"><span class="m-label">cost per step</span><span class="m-val" id="m-coststep">—</span></div>
       </div>
-    </div>
+    </details>
 
     <div class="block">
       <h2>What Jev returned <em>(typed)</em></h2>
