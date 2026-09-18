@@ -125,20 +125,26 @@ The accumulating run history (`runs.jsonl`, append-only, capped at the most rece
 - `GET` — `{ runs: [ … ], count: n }`, newest first.
 - `DELETE` — clears the file. Returns `{ ok: true, cleared: n }`.
 
-Record shape (all fields validated):
+Record shape (all fields validated). `stepVerdicts` is the path's colour per
+step — **green** where the model's own move was played, **red** where the walk
+took the correct move instead — and is positionally aligned with
+`confidenceBands` and `stepFlags`:
 
 ```jsonc
 {
   "difficulty": "easy|medium|hard",
   "mode": "live",
-  "outcome": "reached|stuck|unparsed|exhausted|error",
+  "outcome": "reached|stuck|exhausted|error",
   "rings": 4, "sectors": 12, "boardHash": "…",
   "steps": 12, "optimalSteps": 12,
   "totalMs": 812, "lastStepMs": 71, "msPerStep": 67.7,
   "calls": 12, "questions": 1,
   "tokensIn": 4944, "tokensOut": 1152,
   "costUsd": 0.000256,
-  "stepAccuracy": 0.92, "correctSteps": 11, "moves": ["inward", "clockwise", …],
+  "stepAccuracy": 1.0, "correctSteps": 12, "moves": ["inward", "clockwise", …],
+  "stepVerdicts": ["green", "red", …], "greenSteps": 9, "redSteps": 3,
+  "confidenceBands": ["high", "low", …], "confidentSteps": 9, "unsureSteps": 3,
+  "jevProposed": 12, "jevCorrect": 10, "jevAccuracy": 0.833,
   "elapsedMs": 4200,
   "model": "…", "id": "…", "at": "2<|fim_hole|>
 }

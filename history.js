@@ -172,6 +172,8 @@ function sortValue(run, col) {
     case 'accuracy': return Number.isFinite(run.stepAccuracy) ? run.stepAccuracy : -1;
     case 'confidence': return Number.isFinite(run.confidentSteps) && run.steps
       ? run.confidentSteps / run.steps : -1;
+    case 'green': return Number.isFinite(run.greenSteps) && run.steps
+      ? run.greenSteps / run.steps : -1;
     case 'totalMs': return Number.isFinite(run.totalMs) ? run.totalMs : -1;
     case 'board': return String(run.rings || '');
     default: return 0;
@@ -202,6 +204,17 @@ function outcomeHtml(run) {
   return `<span class="verdict ${ok ? 'ok' : 'no'}">${escapeHtml(run.outcome)}</span>`;
 }
 
+/** "7/11" — steps where the model's OWN move was played, out of all steps. The
+ *  rest were corrected. This is the run's headline now: a red step is one the
+ *  model did not earn. Blank for runs recorded before it was captured. */
+function greenCell(r) {
+  const n = Number.isFinite(r.greenSteps) ? r.greenSteps : null;
+  const total = Number.isFinite(r.steps) ? r.steps : null;
+  if (n === null || !total) return '<span class="dim">—</span>';
+  const red = Number.isFinite(r.redSteps) ? r.redSteps : 0;
+  return `${n}/${total}${red ? ` <span class="dim">(${red} corrected)</span>` : ''}`;
+}
+
 /** "7/11" — steps taken with a clear read, out of all steps. Blank for runs
  *  recorded before confidence was captured. */
 /** A 0..1 rate as a percentage, for the confidence tiles. */
@@ -226,6 +239,7 @@ function tableRows(runs) {
         <td>${outcomeHtml(r)}</td>
         <td>${stepsCell(r)}</td>
         <td>${display(r.stepAccuracy, 'sc')}</td>
+        <td title="steps where the model's own move was played, of all steps">${greenCell(r)}</td>
         <td title="steps taken with a clear read, of all steps">${confidenceCell(r)}</td>
         <td>${display(score(r.totalMs), 'ms')} ms</td>
         <td>${boardCell(r)}</td>
@@ -255,12 +269,14 @@ function csvEscape(v) {
 function csvRows(runs) {
   const head = ['at', 'difficulty', 'mode', 'outcome', 'steps', 'optimalSteps',
     'stepAccuracy', 'correctSteps', 'confidentSteps', 'unsureSteps', 'mediumSteps',
+    'greenSteps', 'redSteps', 'jevProposed', 'jevCorrect', 'jevAccuracy',
     'totalMs', 'msPerStep', 'lastStepMs',
     'calls', 'questions', 'tokensIn', 'tokensOut', 'costUsd',
     'rings', 'sectors', 'boardHash', 'model', 'id'];
   const rows = [...runs].sort(compare).map((r) => [
     r.at, r.difficulty, r.mode, r.outcome, r.steps, r.optimalSteps,
     r.stepAccuracy, r.correctSteps, r.confidentSteps, r.unsureSteps, r.mediumSteps,
+    r.greenSteps, r.redSteps, r.jevProposed, r.jevCorrect, r.jevAccuracy,
     r.totalMs, msPerStep(r), r.lastStepMs,
     r.calls, r.questions, r.tokensIn, r.tokensOut, r.costUsd,
     r.rings, r.sectors, r.boardHash, r.model, r.id,
@@ -317,6 +333,12 @@ function cumulativeHtml(runs) {
   // nothing — they are excluded, not counted as zero.
   const confSteps = summarize(runs.map((r) => (Number.isFinite(r.confidentSteps) && r.steps
     ? r.confidentSteps / r.steps : null)));
+  // The headline rate: of every step these runs took, how many were the model's
+  // own move rather than a correction. Runs from before capture contribute
+  // nothing — excluded, never counted as zero.
+  const greenRate = summarize(runs.map((r) => (Number.isFinite(r.greenSteps) && r.steps
+    ? r.greenSteps / r.steps : null)));
+  const jevAcc = summarize(runs.map((r) => (Number.isFinite(r.jevAccuracy) ? r.jevAccuracy : null)));
 
   const tiles = [
     ['runs recorded', String(totalRuns)],
@@ -336,6 +358,16 @@ function cumulativeHtml(runs) {
     ['step accuracy', opt.n < 2
       ? `${opt.mean === null ? '—' : opt.mean.toFixed(3)} <em>(n&lt;2)</em>`
       : `${opt.mean.toFixed(3)} ± ${opt.stddev.toFixed(3)} <em>(n=${opt.n})</em>`],
+    ["steps the model's own", greenRate.n === 0
+      ? '<em>not captured yet</em>'
+      : greenRate.n < 2
+        ? `${pctOf(greenRate.mean)} <em>(n&lt;2)</em>`
+        : `${pctOf(greenRate.mean)} ± ${pctOf(greenRate.stddev)} <em>(n=${greenRate.n})</em>`],
+    ["Jev's accuracy", jevAcc.n === 0
+      ? '<em>not captured yet</em>'
+      : jevAcc.n < 2
+        ? `${pctOf(jevAcc.mean)} <em>(n&lt;2)</em>`
+        : `${pctOf(jevAcc.mean)} ± ${pctOf(jevAcc.stddev)} <em>(n=${jevAcc.n})</em>`],
     ['confident steps', confSteps.n === 0
       ? '<em>not captured yet</em>'
       : confSteps.n < 2

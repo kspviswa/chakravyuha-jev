@@ -47,16 +47,39 @@ A single **blended** rate of **$0.042 per 1M tokens**, documented here rather th
 pretending to know the upstream's split pricing. Both token counts are summed from every
 call in the run — `output_tokens` is not assumed to be zero.
 
+## The path: green and red
+
+Every step is graded, and the grading — not the outcome — is what reports the
+model:
+
+| colour | Meaning |
+|---|---|
+| **green** | Jev's own move, played exactly as it gave it. |
+| **red** | Jev's move was **not** played. The walk took the correct move from its own calculation instead, and went on. |
+
+A red step records *why*: `unsure` (confidence below 0.5 — per the TypeSafe spec
+a low read means no clear winner, so it is not acted on), `unplayable` (the answer
+is not a door here, or it doubles back onto a cell already walked), `unreadable`
+(no usable answer for that cell), or `detour` (even the correct move's cell was
+already walked). It also records whether Jev's own answer would have been right
+anyway — an unsure guess that was correct is a different fact from a confident
+answer that was not.
+
+**`jevAccuracy`** is the headline measure: of the moves Jev *proposed*, how many
+shortened the distance to the centre. Since a red step always plays the correct
+move, `stepAccuracy` (the walk's own record) sits at 1.0 unless a **green** step
+went astray — the interesting case, where the model was confident and wrong.
+
 ## Outcomes
 
-A run ends in exactly one of five ways, and the label is never flattering:
+Because the walk can always overrule a bad answer, an unreadable or unplayable
+answer is now a red **step**, not an ending. Three ways remain:
 
 | `outcome` | Meaning |
 |---|---|
 | `reached` | Abhimanyu arrived at the centre. |
-| `stuck` | every legal neighbour has already been visited — Jev has nowhere to go. |
-| `unparsed` | Jev's answer could not be read as one of the offered moves. |
-| `exhausted` | the step budget `2 · R · S` ran out. Generous but finite. |
+| `stuck` | every legal neighbour has already been visited — the walk has nowhere to go. |
+| `exhausted` | the step budget `2 · R · S` ran out. A defensive guard: the no-revisit rule means it should never fire. |
 | `error` | the transport failed (e.g. `no_key`). The typed code is preserved. |
 
 ## Statistics (the history page)

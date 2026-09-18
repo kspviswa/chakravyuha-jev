@@ -28,6 +28,11 @@ const COL = {
   ring: 'rgba(90,100,120,0.14)',
   warrior: '#f87171',
   trail: '#38bdf8',
+  // The path's two colours. GREEN is the model's own move, played as given; RED
+  // is a move we did not take — the walk used the correct move instead. They are
+  // the run's real output: the outcome is no longer in doubt, the colour is.
+  green: '#4ade80',
+  red: '#f87171',
   token: '#a78bfa',
   target: '#4ade80',
   text: '#e8eaf0',
@@ -172,6 +177,7 @@ export const chakraSkin = {
     this.board = makeChakraBoard(this.difficulty || 'easy', Math.random, { warriors: this.obstacles !== false });
     this.pos = { ring: this.board.src.ring, sector: this.board.src.sector };
     this.trail = [this.board.src];
+    this.stepVerdicts = [];
     this.verdict = null;
     this._draw();
     this._publishHook();
@@ -180,6 +186,7 @@ export const chakraSkin = {
   begin() {
     this.pos = { ring: this.board.src.ring, sector: this.board.src.sector };
     this.trail = [this.board.src];
+    this.stepVerdicts = [];
     this.verdict = null;
     this._draw();
     this._publishHook();
@@ -189,6 +196,11 @@ export const chakraSkin = {
   animateHop(h) {
     const from = h.from || this.pos;
     const to = h.to;
+    // The verdict travels with the hop, so the segment drawn from `from` to `to`
+    // can be coloured the moment the walk lands — and stays coloured, because
+    // the list is index-aligned with the segments of `trail`.
+    if (!Array.isArray(this.stepVerdicts)) this.stepVerdicts = [];
+    this.stepVerdicts.push(h.verdict || null);
     return this.animator.play([{ from, to, dir: h.dir, step: h.step, pauseAfter: HOP_BEAT }], { S: this.board.S }).then(() => {
       this.pos = to;
       this.trail.push(to);
@@ -204,12 +216,17 @@ export const chakraSkin = {
    */
   check(moves, opts = {}) {
     const reached = this.pos.ring === 0 && this.pos.sector === 0;
+    // The path's colours are part of the verdict, so a caller that graded the
+    // run can hand them over and the drawing stays in step with the numbers.
+    if (Array.isArray(opts.stepVerdicts)) this.stepVerdicts = opts.stepVerdicts.slice();
     this.verdict = {
       reached,
       steps: moves.length,
       optimal: opts.optimal ?? null,
       optimalPath: opts.optimalPath ?? null,
       optimalFromHere: opts.optimalFromHere ?? null,
+      greenSteps: (this.stepVerdicts || []).filter((v) => v === 'green').length,
+      redSteps: (this.stepVerdicts || []).filter((v) => v === 'red').length,
     };
     return this.verdict;
   },
@@ -334,21 +351,27 @@ export const chakraSkin = {
       }
     }
 
-    // trail of visited cells (drawn faintly behind the moving token)
+    // The path, drawn segment by segment so each hop can carry its own colour:
+    // green where the model's own move was played, red where the walk took the
+    // correct move instead. A segment with no recorded verdict — a hop drawn
+    // before the run was graded — falls back to the neutral trail colour.
     if (this.trail.length > 1) {
-      ctx.strokeStyle = COL.trail;
       ctx.lineWidth = Math.max(2, 3 * this.dpr);
       ctx.globalAlpha = 0.85;
       ctx.setLineDash([]);
-      ctx.beginPath();
-      this.trail.forEach((c, idx) => {
-        const p = this._cellPos(c.ring, c.sector);
-        if (idx === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
-      });
+      ctx.lineCap = 'round';
+      const pts = this.trail.map((c) => this._cellPos(c.ring, c.sector));
       const pos = this.pos;
-      const pNow = this._cellPos(pos.ring, pos.sector);
-      ctx.lineTo(pNow.x, pNow.y);
-      ctx.stroke();
+      pts.push(this._cellPos(pos.ring, pos.sector));
+      const verdicts = Array.isArray(this.stepVerdicts) ? this.stepVerdicts : [];
+      for (let i = 1; i < pts.length; i++) {
+        const v = verdicts[i - 1];
+        ctx.strokeStyle = v === 'red' ? COL.red : v === 'green' ? COL.green : COL.trail;
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+      }
       ctx.globalAlpha = 1;
     }
 

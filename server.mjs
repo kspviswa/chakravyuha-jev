@@ -240,7 +240,10 @@ const RUN_MODES = ['live', 'live-step'];
 // Imported from the single definition so the server and the walk can never
 // disagree about what a band is called.
 const CONFIDENCE_BANDS = BANDS;
-const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error'];
+// The walk can always overrule a bad answer, so 'unparsed'/'illegal'/'revisited'
+// are no longer endings — they are red steps. What remains is whether it arrived,
+// whether it boxed itself in, the defensive cap, and transport failure.
+const RUN_OUTCOMES = ['reached', 'stuck', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
 
@@ -336,6 +339,13 @@ export function normaliseRunRecord(input) {
     if ('confidentSteps' in src) rec.confidentSteps = optionalNum(src, 'confidentSteps', 0, 1e6);
     if ('unsureSteps' in src) rec.unsureSteps = optionalNum(src, 'unsureSteps', 0, 1e6);
     if ('mediumSteps' in src) rec.mediumSteps = optionalNum(src, 'mediumSteps', 0, 1e6);
+    // The path's colours: green steps were the model's own move, red steps were
+    // corrected. The two counts are the run's headline now.
+    if ('greenSteps' in src) rec.greenSteps = optionalNum(src, 'greenSteps', 0, 1e6);
+    if ('redSteps' in src) rec.redSteps = optionalNum(src, 'redSteps', 0, 1e6);
+    if ('jevProposed' in src) rec.jevProposed = optionalNum(src, 'jevProposed', 0, 1e6);
+    if ('jevCorrect' in src) rec.jevCorrect = optionalNum(src, 'jevCorrect', 0, 1e6);
+    if ('jevAccuracy' in src) rec.jevAccuracy = optionalNum(src, 'jevAccuracy', 0, 1);
     // Per-step bands, order preserved. Only the known band names are kept, so a
     // hand-crafted POST cannot inject arbitrary strings into the history.
     if ('confidenceBands' in src && Array.isArray(src.confidenceBands)) {
@@ -348,6 +358,14 @@ export function normaliseRunRecord(input) {
     // ride in on it.
     if ('stepFlags' in src && Array.isArray(src.stepFlags)) {
       rec.stepFlags = src.stepFlags.filter((f) => typeof f === 'boolean').slice(0, 5000);
+    }
+    // The path's colours, in order. Whitelisted by value for the same reason the
+    // band names are: a hand-made POST must not be able to write arbitrary
+    // strings into the history.
+    if ('stepVerdicts' in src && Array.isArray(src.stepVerdicts)) {
+      rec.stepVerdicts = src.stepVerdicts
+        .filter((x) => x === 'green' || x === 'red')
+        .slice(0, 5000);
     }
     if ('chainAnswered' in src) rec.chainAnswered = optionalNum(src, 'chainAnswered', 0, 1e6);
     if ('chainApplied' in src) rec.chainApplied = optionalNum(src, 'chainApplied', 0, 1e6);

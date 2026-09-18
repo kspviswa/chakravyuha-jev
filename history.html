@@ -41,6 +41,7 @@
     <ul>
       <li><b>Speed</b> — <code>totalMs</code> is the whole-run wall time; <code>msPerStep = totalMs ÷ max(steps, 1)</code>. Lower is better.</li>
       <li><b>Optimality</b> — <code>optimalSteps / steps</code>, clamped to [0, 1]. <b>1.0 is perfect.</b> A run that did not reach the centre scores 0; a board with no route at all scores <code>null</code> and is excluded from the mean rather than counted as 0.</li>
+      <li><b>Green</b> — <code>greenSteps / steps</code>: how many of the run's moves were the model's own, played as given. The rest were <b>red</b> — corrected by the walk, because the model was unsure or its answer could not be played. The colour of the path is the run's real output; the walk can always overrule, so arriving is no longer in doubt.</li>
       <li><b>Confident</b> — <code>confidentSteps / steps</code>: how many of the run's moves were taken with TypeSafe reporting a clear read. A step Jev was sure about is a different measurement from a step it guessed at, even when both were right. Blank on runs recorded before it was captured.</li>
       <li><b>Accuracy</b> — <code>stepAccuracy</code> from the run record. <code>reached</code> is tracked separately, because “valid but never arrived” and “arrived” are different failures.</li>
       <li><b>Variance / stddev</b> — sample variance (n&nbsp;−&nbsp;1 denominator). Variance needs at least two runs; below that it shows <b>—</b>, never a false 0.</li>
@@ -68,6 +69,7 @@
             <th data-col="outcome">outcome</th>
             <th data-col="steps">steps/optimal</th>
             <th data-col="accuracy">accuracy</th>
+            <th data-col="green">green</th>
             <th data-col="confidence">confident</th>
             <th data-col="totalMs">speed</th>
             <th data-col="board">board</th>

@@ -255,7 +255,8 @@ test('policy: a correct policy reaches the centre in ONE call and never doubles 
     const game = await runPolicyGame({ board: b, transport: t });
     assert.equal(game.outcome, 'reached', `${d}: reached`);
     assert.equal(t.calls, 1, `${d}: the whole walk costs exactly one call (got ${t.calls})`);
-    assert.equal(game.repairs, 0, `${d}: a correct policy needs no repair`);
+    assert.equal(game.redSteps, 0, `${d}: a correct policy is played as given — all green`);
+    assert.equal(game.steps, game.greenSteps, `${d}: every step is green`);
     assert.equal(game.reject, null, `${d}: nothing was refused`);
     // A correct policy is a strict descent, so no cell is ever entered twice.
     const seen = new Set();
@@ -266,7 +267,7 @@ test('policy: a correct policy reaches the centre in ONE call and never doubles 
   }
 });
 
-test('policy: the field failure — one move repeated for every cell — is never UNPARSED', async () => {
+test('policy: the field failure — one move repeated everywhere — is graded, never unreadable', async () => {
   // This is the bug that shipped: 64 questions, 64 identical answers. In policy
   // mode the same model still answers 'inward' everywhere, but every answer is
   // drawn from that cell's real doors, so it is always PLAYABLE. The walk may
@@ -276,11 +277,16 @@ test('policy: the field failure — one move repeated for every cell — is neve
     for (let i = 0; i < 25; i++) {
       const b = makeChakraBoard(d, lcg(300 + i));
       const game = await runPolicyGame({ board: b, transport: scriptedTransport(alwaysInwardPick) });
-      assert.notEqual(game.outcome, 'unparsed', `${d}: repeated answers are readable`);
-      // An offered move is always a real door, so the walk can only ever refuse
-      // one for doubling back — never for there being no such door.
-      assert.notEqual(game.outcome, 'illegal', `${d}: an offered move is always a door`);
-      if (game.outcome === 'revisited') assert.equal(game.reject, 'revisited');
+      // Repeating one move is still readable, and every answer offered is a
+      // real door — so the walk is never blocked by an unreadable or illegal
+      // answer; it overrules the ones it cannot use. The path tells the story
+      // instead: greens where the model was played, reds where it was not.
+      // It can still be BOXED IN by its own wandering — that is a real finding,
+      // not a parsing failure — so the vocabulary is reached/stuck, nothing else.
+      assert.ok(['reached', 'stuck'].includes(game.outcome),
+        `${d}: a repeated move is never unreadable or illegal (got ${game.outcome})`);
+      assert.equal(game.jevProposed, game.steps, `${d}: every cell got a readable answer`);
+      assert.equal(game.greenSteps + game.redSteps, game.steps, `${d}: every step is graded`);
       // Replay the moves against the doors: every one must be a real edge.
       let here = { ring: b.src.ring, sector: b.src.sector };
       for (const dir of game.moves) {
@@ -292,7 +298,7 @@ test('policy: the field failure — one move repeated for every cell — is neve
   }
 });
 
-test('policy: an answer that is not one of the offered doors is refused and repaired', async () => {
+test('policy: an answer that is not one of the offered doors is overruled, not re-asked', async () => {
   const b = makeChakraBoard('easy', lcg(67));
   // 'outward' from the outermost ring is off the board, so it is never offered
   // at the start cell. A model that answers it anyway is refused.
@@ -311,15 +317,22 @@ test('policy: an answer that is not one of the offered doors is refused and repa
     },
   };
   const game = await runPolicyGame({ board: b, transport: t });
-  assert.ok(!game.moves.includes('outward') || game.outcome === 'reached',
-    'an unoffered move is never applied as the first step');
-  assert.ok(t.calls > 1, `the walk repaired and re-asked (${t.calls} calls)`);
-  assert.ok(game.repairs >= 1, 'the repair is recorded');
+  // The walk cannot play the answer, so it plays the CORRECT move itself and
+  // marks the step red. One call, no re-ask: it already knows the right move.
+  assert.equal(game.outcome, 'reached', 'a bad answer does not stop the walk');
+  assert.equal(t.calls, 1, `the walk never had to ask twice (${t.calls} calls)`);
+  assert.equal(game.applied[0].verdict, 'red', 'the unplayable answer is a red step');
+  assert.equal(game.applied[0].reason, 'unplayable', 'and the reason is recorded');
+  assert.equal(game.applied[0].jevDir, 'outward', 'the record keeps what Jev actually said');
+  assert.notEqual(game.moves[0], 'outward', 'but that is not the move that was played');
+  assert.equal(game.applied[0].appliedCorrect, true, 'the substituted move is the correct one');
+  assert.equal(game.applied[0].jevCorrect, false,
+    'an answer that is not a door cannot be the correct move — false, not null');
 });
 
-test('policy: a policy that doubles back never re-enters a cell, and is repaired', async () => {
+test('policy: a policy that doubles back is overruled, and no cell is ever re-entered', async () => {
   const REV = { inward: 'outward', outward: 'inward', clockwise: 'counterclockwise', counterclockwise: 'clockwise' };
-  let refusals = 0;
+  let reds = 0;
   for (let i = 0; i < 20; i++) {
     const b = makeChakraBoard('easy', lcg(71 + i));
     // Answer every cell with the reverse of the correct move: that points back
@@ -330,7 +343,7 @@ test('policy: a policy that doubles back never re-enters a cell, and is repaired
       return rev && moves.some((m) => m.dir === rev) ? rev : correct;
     });
     const game = await runPolicyGame({ board: b, transport: t });
-    refusals += game.repairs;
+    reds += game.redSteps;
 
     // The invariant that matters: a doubling-back move is never applied, so no
     // cell is ever entered twice, and every move is a real door.
@@ -344,10 +357,10 @@ test('policy: a policy that doubles back never re-enters a cell, and is repaired
       here = { ring: edge.ring, sector: edge.sector };
     }
   }
-  assert.ok(refusals > 0, 'the doubling back was refused and repaired somewhere in the sweep');
+  assert.ok(reds > 0, 'the doubling back was caught and overruled somewhere in the sweep');
 });
 
-test('policy: when the repair budget runs out, a doubling-back policy is reported as REVISITED', async () => {
+test('policy: a doubling-back answer is marked red, and the walk carries on', async () => {
   const b = makeChakraBoard('easy', lcg(73));
   const REV = { inward: 'outward', outward: 'inward', clockwise: 'counterclockwise', counterclockwise: 'clockwise' };
   const first = legalCandidates(b, b.src.ring, b.src.sector)[0];
@@ -359,21 +372,27 @@ test('policy: when the repair budget runs out, a doubling-back policy is reporte
     const rev = REV[first.dir];
     return moves.some((m) => m.dir === rev) ? rev : moves[0].dir;
   });
-  const game = await runPolicyGame({ board: b, transport: t, maxRepairs: 0 });
-  assert.equal(game.moves.length, 1, 'the first move was played');
-  assert.equal(game.outcome, 'revisited', 'the second was refused as a doubling back');
-  assert.equal(game.reject, 'revisited');
-  assert.equal(game.rejectDir, REV[first.dir], 'and the refused direction is named');
-  assert.equal(game.repairs, 0, 'no repair was available');
+  const game = await runPolicyGame({ board: b, transport: t });
+  assert.ok(game.steps >= 2, 'the walk did not stop at the doubling back');
+  assert.equal(game.applied[0].verdict, 'green', 'the first move was Jev\'s, played as given');
+  const red = game.applied.find((a) => a.verdict === 'red');
+  assert.ok(red, 'the doubling back produced a red step');
+  assert.equal(red.reason, 'unplayable', 'because the move could not be played');
+  assert.equal(red.jevDir, REV[first.dir], 'and the direction it refused is named');
+  assert.equal(red.appliedCorrect, true, 'the step we took instead is the correct one');
 });
 
-test('policy: no usable answer for a cell is UNREADABLE, not stuck', async () => {
+test('policy: no usable answer is overruled — every step red, and the walk still arrives', async () => {
   const b = makeChakraBoard('easy', lcg(7));
   const t = scriptedTransport(shortestPick, { skipCells: 999 });
   const game = await runPolicyGame({ board: b, transport: t });
-  assert.equal(game.outcome, 'unparsed', 'nothing readable → unparsed');
-  assert.equal(game.reject, 'unreadable');
-  assert.equal(game.moves.length, 0);
+  assert.equal(game.outcome, 'reached', 'an unreadable policy no longer stops the walk');
+  assert.ok(game.moves.length > 0, 'the walk moved');
+  assert.equal(game.redSteps, game.steps, 'every step was ours, not Jev\'s');
+  assert.ok(game.applied.every((a) => a.reason === 'unreadable'), 'and every one says why');
+  assert.equal(game.bandCounts.unknown, game.steps, 'no confidence reported → unknown, never low');
+  assert.equal(game.jevProposed, 0, 'Jev proposed nothing usable');
+  assert.equal(game.steps, shortest(b, b.src, b.dst).length, 'and the path is exactly the shortest one');
 });
 
 test('policy: a transport error ends the run as an error', async () => {
@@ -403,7 +422,8 @@ test('policy: buildPolicyBody reports summed tokens and the new counters', async
   assert.equal(body.usage.output_tokens, 20 * game.calls.length);
   assert.ok(body.usage.output_tokens > 0);
   assert.equal(body._cellsAsked, game.cellsAsked);
-  assert.equal(body._repairs, 0);
+  assert.equal(body._redSteps, game.redSteps);
+  assert.deepEqual(body._stepVerdicts, game.stepVerdicts);
   assert.ok(body._cellsAsked > 0, 'the record knows how many cells were asked about');
 });
 
@@ -485,7 +505,7 @@ test('obstacles off: the walk reaches the centre with a correct policy', async (
   const b = makeChakraBoard('easy', lcg(13), { warriors: false });
   const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick) });
   assert.equal(game.outcome, 'reached', 'a warrior-free maze is still winnable');
-  assert.equal(game.repairs, 0, 'and needs no repair');
+  assert.equal(game.redSteps, 0, 'and is played as given, all green');
 });
 
 test('presets: the three difficulties are distinct and labelled', () => {
@@ -535,7 +555,7 @@ test('step: a correct model reaches the centre, one cell per call', async () => 
     const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
     assert.equal(game.outcome, 'reached', `${d}: reached`);
     assert.equal(game.mode, 'step', `${d}: the mode is reported`);
-    assert.equal(game.repairs, 0, `${d}: no repair needed`);
+    assert.equal(game.redSteps, 0, `${d}: nothing needed overruling`);
     // One call per hop, and never more — the walk must not ask about the centre.
     assert.equal(t.calls, game.steps, `${d}: one call per step (${t.calls} calls, ${game.steps} steps)`);
     for (const cl of game.calls) {
@@ -591,24 +611,28 @@ test('step: the walk never asks about a cell it is not standing on', async () =>
   }
 });
 
-test('step: no usable answer is UNREADABLE, not stuck', async () => {
+test('step: no usable answer is overruled, and the walk still arrives', async () => {
   const b = makeChakraBoard('easy', lcg(90));
   const t = scriptedTransport(shortestPick, { skipCells: 1 });
   const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
-  assert.equal(game.outcome, 'unparsed', 'an unanswered cell is unreadable, never stuck');
-  assert.equal(game.reject, 'unreadable');
+  assert.equal(game.outcome, 'reached', 'an unanswered cell no longer stops the walk');
+  assert.equal(game.applied[0].verdict, 'red', 'the unanswered cell is a red step');
+  assert.equal(game.applied[0].reason, 'unreadable');
+  assert.ok(game.steps > 1, 'and the walk went on from there');
 });
 
-test('step: a doubling-back policy is still refused and repaired', async () => {
+test('step: a doubling-back policy is overruled, and the vocabulary still matches', async () => {
   const b = makeChakraBoard('easy', lcg(91));
   // Always inward: legal, but it walks into walls of the ring structure and can
   // double back. Whatever happens, the vocabulary must match policy mode.
   const t = scriptedTransport(alwaysInwardPick);
   const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
-  assert.ok(['reached', 'stuck', 'revisited', 'illegal', 'exhausted'].includes(game.outcome),
+  assert.ok(['reached', 'stuck', 'exhausted', 'error'].includes(game.outcome),
     `outcome from the shared vocabulary (got ${game.outcome})`);
   assert.ok(game.steps <= game.maxSteps, 'the step budget is respected');
-  assert.ok(t.calls <= game.maxSteps + 4, 'calls stay bounded by the step budget plus repairs');
+  // No repairs any more: one call per step, and the walk never asks twice about
+  // the same cell, so the calls are bounded by the step budget exactly.
+  assert.ok(t.calls <= game.maxSteps, 'calls stay bounded by the step budget');
 });
 
 test('step: a transport error ends the run as an error, after the calls it made', async () => {

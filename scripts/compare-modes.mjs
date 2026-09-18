@@ -90,7 +90,9 @@ function summarise(mode) {
     calls: mean(rs.map((r) => r.calls).filter((n) => typeof n === 'number')),
     msPerStep: mean(rs.map((r) => r.msPerStep).filter((n) => typeof n === 'number')),
     costPerRun: mean(rs.map((r) => r.costUsd).filter((n) => typeof n === 'number')),
-    repairs: mean(rs.map((r) => r.repairs).filter((n) => typeof n === 'number')),
+    greenRate: mean(rs.map((r) => (Number.isFinite(r.greenSteps) && r.steps ? r.greenSteps / r.steps : null))
+      .filter((n) => typeof n === 'number')),
+    jevAcc: mean(rs.map((r) => r.jevAccuracy).filter((n) => typeof n === 'number')),
     conf,
     byDiff,
   };
@@ -132,7 +134,12 @@ for (const s of out) {
   console.log(`   cells asked/call   : ${num(s.cellsAsked, 0)}`);
   console.log(`   ms per step        : ${num(s.msPerStep, 0)}`);
   console.log(`   cost per run       : $${(s.costPerRun ?? 0).toFixed(5)}`);
-  console.log(`   repairs per run    : ${num(s.repairs, 2)}`);
+  if (s.greenRate !== null) {
+    console.log(`   steps the model's  : ${pct(s.greenRate)}   ← the rest were corrected (red)`);
+  }
+  if (s.jevAcc !== null) {
+    console.log(`   Jev's own accuracy : ${pct(s.jevAcc)}   ← of the moves it proposed, how many were right`);
+  }
   const ct = s.conf;
   const bandLine = ['high', 'medium', 'low', 'unknown']
     .filter((b) => ct[b].n > 0)

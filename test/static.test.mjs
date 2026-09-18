@@ -97,9 +97,21 @@ test('index.html links to the history page', () => {
 });
 
 // ---- 3. no search in the game loop ---------------------------------------
-test('invariant: lib/jev.js must not reference shortest', () => {
+test('invariant: the walk may know the NEXT correct move, but never the route', () => {
   const jev = fs.readFileSync(path.join(ROOT, 'lib', 'jev.js'), 'utf8');
-  assert.doesNotMatch(jev, /\bshortest\b/, 'lib/jev.js must not reference shortest');
+  // This invariant changed deliberately. The walk must now be able to OVERRULE
+  // the model — when confidence is low, or the answer cannot be played — and it
+  // does that by taking the correct move from its own calculation. So it knows
+  // one step of ground truth.
+  //
+  // What it must still never hold is the ROUTE. If the walk had the whole path
+  // it could replay it, and "the model's own move" would stop meaning anything:
+  // the green/red split would measure nothing. One local step is the most it
+  // may have, and that is exactly what referenceMove() gives it.
+  assert.doesNotMatch(jev, /\boptimalRoute\b/, 'lib/jev.js must not hold the whole route');
+  assert.doesNotMatch(jev, /\bshortest\b/, 'not even the raw search — only the local helpers');
+  assert.match(jev, /referenceMove/, 'the override comes from referenceMove()');
+  assert.match(jev, /distanceToGoal/, 'and the grading from distanceToGoal()');
 });
 
 test('invariant: no referee token anywhere in the repo', () => {

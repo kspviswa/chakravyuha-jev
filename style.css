@@ -125,16 +125,26 @@ button:disabled{opacity:.5;cursor:progress}
 .m-val{font:600 18px var(--mono)}
 .meters.key .m-val{font-size:22px}
 
-/* ---- confidence: one number, one bar. "y of x steps" at a glance ---------- */
+/* ---- the path: green = the model's move, red = corrected ------------------- */
 .conf{margin-top:10px;background:#12151d;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .conf-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .conf-head .m-val{font-size:20px}
 .conf-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#22262f;margin-top:8px}
 .conf-bar i{display:block;height:100%}
-.conf-bar i.high{background:var(--accent)}
-.conf-bar i.medium{background:var(--warn)}
-.conf-bar i.low{background:#3a4050}
+.conf-bar i.green{background:var(--accent)}
+.conf-bar i.red{background:var(--warn)}
 .conf-note{font-size:11.5px;color:var(--dim);margin-top:7px}
+
+/* ---- per-step details ------------------------------------------------------ */
+.steps-table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
+.steps-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--dim);font-weight:600;padding:4px 6px;border-bottom:1px solid var(--line)}
+.steps-table td{padding:3px 6px;border-bottom:1px solid rgba(42,49,64,.5);vertical-align:middle}
+.steps-table tr:last-child td{border-bottom:none}
+.steps-table td.dim{color:var(--dim);font-size:11px}
+.swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.swatch.green{background:var(--accent)}
+.swatch.red{background:var(--warn)}
 
 .skin-result{display:flex;flex-direction:column;gap:12px}
 .eta-band{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;background:#08131c;border:1px solid #1d4a30;border-radius:10px;padding:12px}

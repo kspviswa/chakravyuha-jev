@@ -428,3 +428,35 @@ test('confidence: counts are clamped, and absent fields stay absent', async () =
     await stopServer(ctx);
   }
 });
+
+test('path: the green/red verdicts and counts are stored, sanitised', async () => {
+  const ctx = await startServer({ runsFile: scratchFile() });
+  try {
+    const { status, body } = await postRun(ctx.base, {
+      ...VALID_RUN,
+      greenSteps: 7, redSteps: 3, jevProposed: 10, jevCorrect: 8, jevAccuracy: 0.8,
+      stepVerdicts: ['green', 'red', 'green', 'bogus', 'green', 'RED', 'red', 'green', 'green', 'green'],
+    });
+    assert.equal(status, 201);
+    assert.equal(body.greenSteps, 7);
+    assert.equal(body.redSteps, 3);
+    assert.equal(body.jevAccuracy, 0.8);
+    assert.deepEqual(body.stepVerdicts, ['green', 'red', 'green', 'green', 'red', 'green', 'green', 'green'],
+      'only the two real colours survive, in order');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+test('path: a verdict count cannot be invented or go negative', async () => {
+  const ctx = await startServer({ runsFile: scratchFile() });
+  try {
+    const { body } = await postRun(ctx.base, { ...VALID_RUN, redSteps: -3 });
+    assert.equal(body.redSteps, 0, 'a negative count clamps to 0');
+    const { body: b2 } = await postRun(ctx.base, { ...VALID_RUN });
+    assert.equal(b2.greenSteps, undefined, 'an absent count is not invented');
+    assert.equal(b2.stepVerdicts, undefined);
+  } finally {
+    await stopServer(ctx);
+  }
+});

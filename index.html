@@ -67,17 +67,19 @@
       <span class="ec-hint" id="error-hint"></span>
     </div>
 
-    <!-- Two numbers only: was the route good, and was Jev sure of it. Everything
-         else lives behind "Numbers" — the panel was a wall of metrics. -->
+    <!-- Four numbers, and the path's colour. Time and cost stay here, in the
+         open — they are asked for. Everything else lives behind "Numbers". -->
     <div class="block">
       <h2>The run</h2>
       <div class="meters key">
         <div class="meter"><span class="m-label">steps vs optimal</span><span class="m-val" id="m-steps">—</span></div>
-        <div class="meter"><span class="m-label">step accuracy</span><span class="m-val" id="m-stepacc">—</span></div>
+        <div class="meter"><span class="m-label">Jev's accuracy</span><span class="m-val" id="m-stepacc">—</span></div>
+        <div class="meter"><span class="m-label">total time</span><span class="m-val" id="m-total">—</span></div>
+        <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
       </div>
       <div class="conf" id="conf-block" hidden>
         <div class="conf-head">
-          <span class="m-label">confidence</span>
+          <span class="m-label">the path</span>
           <span class="m-val" id="m-conf">—</span>
         </div>
         <div class="conf-bar" id="conf-bar"></div>
@@ -85,15 +87,24 @@
       </div>
     </div>
 
+    <details class="block" id="steps-block" open>
+      <summary>Steps <em>(green = Jev's move, red = corrected)</em></summary>
+      <table class="steps-table">
+        <thead>
+          <tr><th>#</th><th>conf</th><th>band</th><th>Jev said</th><th>played</th><th>why</th><th>time · cost</th></tr>
+        </thead>
+        <tbody id="steps-body"></tbody>
+      </table>
+    </details>
+
     <details class="block">
-      <summary>Numbers <em>(time, calls, tokens, cost)</em></summary>
+      <summary>Numbers <em>(calls, tokens, per step)</em></summary>
       <div class="meters">
         <div class="meter"><span class="m-label">decision time · last step</span><span class="m-val" id="m-decision">—</span></div>
-        <div class="meter"><span class="m-label">total time</span><span class="m-val" id="m-total">—</span></div>
         <div class="meter"><span class="m-label">calls made</span><span class="m-val" id="m-calls">—</span></div>
-        <div class="meter"><span class="m-label">total cost</span><span class="m-val" id="m-cost">—</span></div>
         <div class="meter"><span class="m-label">questions per call</span><span class="m-val" id="m-q">—</span></div>
         <div class="meter"><span class="m-label">policy used · applied / answered</span><span class="m-val" id="m-chain">—</span></div>
+        <div class="meter"><span class="m-label">walk accuracy · moves played</span><span class="m-val" id="m-walkacc">—</span></div>
         <div class="meter"><span class="m-label">elapsed (wall clock)</span><span class="m-val" id="m-elapsed">—</span></div>
       </div>
       <h2 style="margin-top:14px">Per step</h2>

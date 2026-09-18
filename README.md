@@ -188,7 +188,7 @@ against a **mock upstream HTTP server**, so there is no stub standing in for any
   warrior impassability, generation over 200 seeded draws per level, determinism, and the
   state sent to Jev (asserting no route leaks into it).
 - `policy.test.mjs` — the full polar policy loop against a mock upstream: optimal runs on
-  every level, honest meter summation, stuck/exhausted/unparsed stops, the two mock-policy
+  every level, honest meter summation, the green/red path, the two mock-policy
   regression runs (shortest-following and inward-greedy), and the `maxSteps` guard.
 - `animation.test.mjs` — polar interpolation and the short-way wrap, the queue, cancel,
   instant mode, **and the invariant that the sprite only ever follows Jev's own route**.

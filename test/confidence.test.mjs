@@ -183,3 +183,88 @@ test('stepCorrectness: a step away from the centre is false, not skipped', () =>
   const flags = stepCorrectness(b, [back.dir, dirs[0]], b.src);
   assert.equal(flags[0], false, 'the move away is counted, and counted wrong');
 });
+
+// ---- the path's colours: green = the model's move, red = corrected ---------
+test('override: a LOW-confidence move is not played — the step is red and the walk corrects', async () => {
+  for (const d of ['easy', 'medium', 'hard']) {
+    const b = makeChakraBoard(d, lcg(200));
+    const game = await runPolicyGame({ board: b, transport: bandedTransport(() => 0.2) });
+    assert.equal(game.outcome, 'reached', `${d}: the walk still arrives`);
+    assert.equal(game.redSteps, game.steps, `${d}: every step was corrected`);
+    assert.equal(game.greenSteps, 0, `${d}: none was the model\'s own`);
+    assert.ok(game.applied.every((a) => a.reason === 'unsure'), `${d}: and every red says why`);
+    assert.ok(game.applied.every((a) => a.appliedCorrect), `${d}: the substituted move is the correct one`);
+    assert.equal(game.steps, shortest(b, b.src, b.dst).length, `${d}: the path is exactly the shortest`);
+  }
+});
+
+test('override: a HIGH-confidence move IS played — the step is green', async () => {
+  const b = makeChakraBoard('medium', lcg(201));
+  const game = await runPolicyGame({ board: b, transport: bandedTransport(() => 0.95) });
+  assert.equal(game.outcome, 'reached');
+  assert.equal(game.greenSteps, game.steps, 'every step is the model\'s own');
+  assert.equal(game.redSteps, 0, 'nothing was corrected');
+  assert.ok(game.applied.every((a) => a.verdict === 'green' && a.reason === null), 'and none says why');
+});
+
+test('override: MEDIUM confidence is played, not corrected — the spec says proceed with caution', async () => {
+  const b = makeChakraBoard('easy', lcg(202));
+  const game = await runPolicyGame({ board: b, transport: bandedTransport(() => 0.6) });
+  assert.equal(game.outcome, 'reached');
+  assert.equal(game.redSteps, 0, 'a medium read is acted on, so nothing is corrected');
+  assert.equal(game.greenSteps, game.steps);
+  assert.ok(game.applied.every((a) => a.band === 'medium'));
+});
+
+test('override: an ABSENT confidence is not low — the move is played, green', async () => {
+  // 'unknown' must never trigger the override. Conflating "said nothing" with
+  // "said it was unsure" would silently rewrite the model's output.
+  const b = makeChakraBoard('easy', lcg(203));
+  const game = await runPolicyGame({ board: b, transport: bandedTransport(() => undefined) });
+  assert.equal(game.outcome, 'reached');
+  assert.equal(game.redSteps, 0, 'an absent confidence does not trigger a correction');
+  assert.equal(game.bandCounts.unknown, game.steps);
+});
+
+test('override: a red step records what Jev said, and whether it was right anyway', async () => {
+  const b = makeChakraBoard('easy', lcg(204));
+  // Low confidence, but the answer is the correct move. We still correct it —
+  // and the record must show that Jev\'s guess would have been right.
+  const game = await runPolicyGame({ board: b, transport: bandedTransport(() => 0.1) });
+  const red = game.applied[0];
+  assert.equal(red.verdict, 'red');
+  assert.equal(red.reason, 'unsure');
+  assert.ok(red.jevDir, 'the answer Jev gave is kept, not discarded');
+  assert.equal(red.jevCorrect, true, 'and it is recorded as having been right anyway');
+  assert.equal(red.dir, red.jevDir, 'here the correct move IS the move Jev gave');
+});
+
+test('override: the green/red split is what the run reports', async () => {
+  const b = makeChakraBoard('medium', lcg(205));
+  let n = 0;
+  const game = await runPolicyGame({
+    board: b, transport: bandedTransport(() => (n++ % 2 === 0 ? 0.9 : 0.3)),
+  });
+  assert.equal(game.greenSteps + game.redSteps, game.steps, 'every step is graded exactly once');
+  assert.ok(game.greenSteps > 0 && game.redSteps > 0, 'both colours appear');
+  assert.deepEqual(game.stepVerdicts.length, game.steps, 'one verdict per step, in order');
+  assert.ok(game.stepVerdicts.every((v) => v === 'green' || v === 'red'), 'and only those two');
+});
+
+test('override: the walk overrules, so it never asks twice — one call per step', async () => {
+  const b = makeChakraBoard('easy', lcg(206));
+  const t = bandedTransport(() => 0.1);
+  const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+  assert.equal(game.outcome, 'reached');
+  assert.equal(t.calls, game.steps, 'no re-ask: the walk already knows the correct move');
+});
+
+test('override: Jev\'s accuracy counts the model\'s own answers, right or wrong', async () => {
+  const b = makeChakraBoard('easy', lcg(207));
+  // Low confidence everywhere → every step corrected, so the WALK is perfect.
+  // Jev\'s own accuracy is what the run is judged on.
+  const game = await runPolicyGame({ board: b, transport: bandedTransport(() => 0.2) });
+  assert.equal(game.jevProposed, game.steps, 'Jev proposed a move at every cell');
+  assert.ok(game.jevCorrectCount >= 0 && game.jevCorrectCount <= game.jevProposed);
+  assert.equal(game.jevCorrectCount, game.steps, 'the mock answers correctly, so all were right');
+});

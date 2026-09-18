@@ -167,12 +167,19 @@ async function askPolicy(key) {
     optimal: routeFromSrc ? routeFromSrc.length : null,
     optimalPath: routeFromSrc ? routeFromSrc.path : null,
     optimalFromHere: routeFromHere ? routeFromHere.length : null,
+    stepVerdicts: game.stepVerdicts,
   });
   // One honest measure of judgment: the fraction of steps that shortened the
   // distance to the centre by exactly one. Computed once, reused everywhere.
+  // Since a red step always takes the correct move, this measures the WALK, and
+  // is 1.0 unless a green step — the model's own move — went astray.
   game._stepAccuracy = (game.outcome === 'reached' || game.outcome === 'stuck')
     ? computeStepAccuracy(board, game.moves, board.src)
     : null;
+  // The headline now: of the moves JEV proposed, how many were right. A green
+  // step that was wrong is the interesting case — the model was confident and
+  // mistaken — and this is the number that exposes it.
+  game._jevAccuracy = game.jevProposed > 0 ? game.jevCorrectCount / game.jevProposed : null;
   // Per-step correctness, kept alongside the per-step confidence band. Together
   // they answer the question that decides whether confidence is worth gating on:
   // are the moves Jev was sure about actually the ones it got right?
@@ -181,6 +188,7 @@ async function askPolicy(key) {
     : null;
   currentSkin.render();
   renderMeters(body, game, v, elapsedMs);
+  renderSteps(game);
   setRunOutcome(game, v);
   recordRun({ game, v, body, elapsedMs });
   return true;
@@ -226,20 +234,24 @@ function renderMeters(body, game, v, elapsedMs) {
 
   $('m-decision').textContent = `${game.lastMs ?? '?'} ms`;
   $('m-total').textContent = `${game.totalMs ?? '?'} ms`;
-  $('m-calls').textContent = game.repairs
-    ? `${game.calls.length} · ${game.repairs} repair${game.repairs === 1 ? '' : 's'}`
-    : String(game.calls.length);
+  $('m-calls').textContent = String(game.calls.length);
   $('m-cost').textContent = Number.isFinite(game.totalCostUsd) ? `$${game.totalCostUsd.toFixed(6)}` : '—';
   $('m-q').textContent = String(game.totalQuestions ?? '—');
   $('m-steps').textContent = optimal === null
     ? 'unreachable'
     : `${steps} / ${optimal}`;
 
-  if (stepAccuracy !== null) {
-    const correct = Math.round(stepAccuracy * steps);
-    $('m-stepacc').textContent = `${stepAccuracy.toFixed(2)} (${correct}/${steps})`;
-  } else {
-    $('m-stepacc').textContent = '—';
+  // The headline meter is now JEV's accuracy — of the moves the model proposed,
+  // how many were right — because that is the model's output. The walk's own
+  // accuracy sits beside it in the details: a red step is always correct, so the
+  // walk only drops below 1.0 when a GREEN step (the model's move) went astray.
+  const jevAcc = game._jevAccuracy ?? null;
+  $('m-stepacc').textContent = jevAcc === null
+    ? '—'
+    : `${jevAcc.toFixed(2)} (${game.jevCorrectCount}/${game.jevProposed})`;
+  const walkAcc = $('m-walkacc');
+  if (walkAcc) {
+    walkAcc.textContent = stepAccuracy === null ? '—' : stepAccuracy.toFixed(2);
   }
 
   setConfidence(game);
@@ -265,42 +277,39 @@ function renderMeters(body, game, v, elapsedMs) {
   $('m-elapsed').textContent = `${Math.round(elapsedMs)} ms`;
 }
 
-/** Honest outcome banner: reached / stuck / unparsed / exhausted / error. */
+/**
+ * The outcome banner. The vocabulary is now just three: the walk always has the
+ * correct move to fall back on, so it can no longer be defeated by an unreadable
+ * or unplayable answer — those are red STEPS, reported in the path, not endings.
+ * What is left is whether it arrived, whether it boxed itself in, and the
+ * defensive step cap. The card therefore leads with the colour split, because
+ * that, not the arrival, is what reports the model.
+ */
 function setRunOutcome(game, v) {
   const el = $('run-outcome');
   if (!el || !game) { if (el) el.hidden = true; return; }
   el.hidden = false;
-  el.classList.remove('reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error');
-  // The verdict, and the step count. Calls, repairs and accuracy are meters in
-  // the Numbers block — the card says WHAT happened, not everything about it.
+  el.classList.remove('reached', 'stuck', 'exhausted', 'error');
+  const red = game.redSteps || 0;
+  const split = game.steps
+    ? ` · ${game.steps - red}/${game.steps} steps Jev's own`
+    : '';
   if (game.outcome === 'reached') {
     el.classList.add('reached');
     const optimalNote = v && v.optimal !== null ? ` · optimal ${v.optimal}` : '';
-    el.textContent = `Reached the centre · ${game.steps} steps${optimalNote}`;
+    el.textContent = `Reached the centre · ${game.steps} steps${optimalNote}${split}`;
   } else if (game.outcome === 'stuck') {
     el.classList.add('stuck');
     // Honest wording: running out of UNVISITED moves is not being trapped. The
     // centre is normally still reachable — the walk would just have to retrace,
     // which the fresh-only rule forbids.
-    const why = game.reject === 'nowhere' ? 'no door opens from here' : 'no unvisited move left';
     const away = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
       ? ` · centre still ${v.optimalFromHere} moves away`
       : '';
-    el.textContent = `Stuck at step ${game.steps} — ${why}${away}`;
-  } else if (game.outcome === 'unparsed') {
-    el.classList.add('unparsed');
-    el.textContent = `Unreadable — no usable move for ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-  } else if (game.outcome === 'revisited') {
-    el.classList.add('illegal');
-    const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-    el.textContent = `Doubled back — '${game.rejectDir}' from ${where} onto a cell already walked, and the repair budget was spent`;
-  } else if (game.outcome === 'illegal') {
-    el.classList.add('illegal');
-    const where = `ring ${currentSkin.pos?.ring ?? '?'}, sector ${currentSkin.pos?.sector ?? '?'}`;
-    el.textContent = `Unplayable — Jev answered '${game.rejectDir}' at ${where}, but no door opens that way`;
+    el.textContent = `Stuck at step ${game.steps} — no unvisited move left${away}${split}`;
   } else if (game.outcome === 'exhausted') {
     el.classList.add('exhausted');
-    el.textContent = `Exhausted — hit the ${game.maxSteps}-step cap without reaching the centre`;
+    el.textContent = `Exhausted — hit the ${game.maxSteps}-step cap without reaching the centre${split}`;
   } else {
     el.classList.add('error');
     el.textContent = 'Error — the run could not finish.';
@@ -313,25 +322,82 @@ function setRunOutcome(game, v) {
 function setConfidence(game) {
   const block = $('conf-block');
   if (!block) return;
-  const bc = game && game.bandCounts;
-  if (!bc || !bc.total) { block.hidden = true; return; }
+  const total = game && game.steps;
+  if (!total) { block.hidden = true; return; }
   block.hidden = false;
-  const known = bc.high + bc.medium + bc.low;
-  $('m-conf').textContent = `${bc.high} of ${bc.total} step${bc.total === 1 ? '' : 's'}`;
+
+  // The path's colours, which are the run's real output: green is the model's
+  // own move played as given, red is a move we did not take. The bar is the
+  // path, left to right, so a glance at it is a glance at the whole run.
+  const green = game.greenSteps || 0;
+  const red = game.redSteps || 0;
+  $('m-conf').textContent = `${green} of ${total} step${total === 1 ? '' : 's'} green`;
+
   const bar = $('conf-bar');
   bar.textContent = '';
-  for (const band of ['high', 'medium', 'low']) {
-    if (!bc[band]) continue;
+  for (const [band, n] of [['green', green], ['red', red]]) {
+    if (!n) continue;
     const seg = document.createElement('i');
     seg.className = band;
-    seg.style.flex = String(bc[band]);
+    seg.style.flex = String(n);
     bar.appendChild(seg);
   }
-  const parts = [`${bc.high} confident`, `${bc.medium} cautious`, `${bc.low} unsure`];
-  if (bc.unknown) parts.push(`${bc.unknown} no confidence reported`);
-  $('conf-note').textContent = known < bc.total
-    ? `${parts.join(' · ')} — the bar covers the ${known} steps that reported one.`
-    : parts.join(' · ');
+
+  // Why each red step was red, and — the interesting part — how often Jev's own
+  // answer would have been right anyway. An unsure guess that was correct is a
+  // different fact from a confident answer that was not.
+  const reasons = { unsure: 0, unplayable: 0, unreadable: 0, detour: 0 };
+  let luckyRed = 0;
+  for (const a of game.applied || []) {
+    if (a.verdict !== 'red') continue;
+    if (a.reason in reasons) reasons[a.reason]++;
+    if (a.jevCorrect === true) luckyRed++;
+  }
+  const bits = [];
+  if (reasons.unsure) bits.push(`${reasons.unsure} unsure`);
+  if (reasons.unplayable) bits.push(`${reasons.unplayable} unplayable`);
+  if (reasons.unreadable) bits.push(`${reasons.unreadable} no answer`);
+  if (reasons.detour) bits.push(`${reasons.detour} forced detour`);
+  const head = red === 0
+    ? 'every move was the model’s own — nothing needed overruling'
+    : `corrected at: ${bits.join(' · ')}`;
+  $('conf-note').textContent = luckyRed
+    ? `${head}. ${luckyRed} of them would have been right anyway.`
+    : `${head}.`;
+}
+
+/**
+ * The per-step details: the colour, the confidence behind it, and what the model
+ * said versus what was played — plus the time and cost that step's call cost.
+ */
+function renderSteps(game) {
+  const el = $('steps-body');
+  if (!el) return;
+  const applied = Array.isArray(game.applied) ? game.applied : [];
+  if (!applied.length) {
+    el.innerHTML = '<tr><td colspan="7" class="dim">No steps were taken.</td></tr>';
+    return;
+  }
+  const conf = (c) => (Number.isFinite(c) ? c.toFixed(2) : '—');
+  el.innerHTML = applied.map((a) => {
+    const red = a.verdict === 'red';
+    const jev = a.jevDir ? a.jevDir : 'no answer';
+    const played = a.dir;
+    // A red step that was nonetheless headed the right way is worth seeing: the
+    // model was unsure, or its answer unplayable, but its instinct was sound.
+    const note = red
+      ? `${a.reason}${a.jevCorrect ? ' · would have been right' : ''}`
+      : (a.appliedCorrect ? '' : 'went astray');
+    return `<tr class="${red ? 'row-red' : 'row-green'}">
+      <td class="nowrap"><span class="swatch ${red ? 'red' : 'green'}"></span>${a.step}</td>
+      <td class="nowrap">${conf(a.confidence)}</td>
+      <td class="nowrap">${a.band}</td>
+      <td class="nowrap">${jev}</td>
+      <td class="nowrap">${played}</td>
+      <td class="dim">${note}</td>
+      <td class="nowrap">${a._ms ? `${a._ms} ms` : ''}${a._cost_usd ? ` · $${a._cost_usd.toFixed(6)}` : ''}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ------------------------------------------------------- run recording
@@ -387,8 +453,8 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     chainApplied: game ? game.chainApplied : null,
     chainAgreement: game ? game.chainAgreement : null,
     cellsAsked: game ? game.cellsAsked : null,
-    repairs: game ? game.repairs : null,
     mismatchCount: game ? game.mismatchCount : null,
+    jevAccuracy: game ? game._jevAccuracy : null,
     // Confidence as its own signal. `confidentSteps` of `steps` were taken with
     // the model reporting a clear read; `confidenceBands` keeps the order, so a
     // run can be replayed band by band and a lucky confident run told apart
@@ -398,6 +464,14 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     mediumSteps: game && game.bandCounts ? game.bandCounts.medium : null,
     confidenceBands: game ? game.confidenceBands : null,
     stepFlags: game ? game._stepFlags : null,
+    // The path's colours: green where the model's own move was played, red where
+    // the walk took the correct move instead. This is the run's output now — the
+    // outcome is all but settled, because the walk can always overrule.
+    stepVerdicts: game ? game.stepVerdicts : null,
+    greenSteps: game ? game.greenSteps : null,
+    redSteps: game ? game.redSteps : null,
+    jevProposed: game ? game.jevProposed : null,
+    jevCorrect: game ? game.jevCorrectCount : null,
     model: body.model || null,
   };
 }
