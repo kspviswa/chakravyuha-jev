@@ -463,6 +463,9 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     unsureSteps: game && game.bandCounts ? game.bandCounts.low : null,
     mediumSteps: game && game.bandCounts ? game.bandCounts.medium : null,
     confidenceBands: game ? game.confidenceBands : null,
+    // Per-step, was JEV's own move right. The calibration input: only this can
+    // say whether its confidence predicts its accuracy. See lib/jev.js.
+    jevFlags: game ? game.jevFlags : null,
     stepFlags: game ? game._stepFlags : null,
     // The path's colours: green where the model's own move was played, red where
     // the walk took the correct move instead. This is the run's output now — the

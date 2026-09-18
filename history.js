@@ -386,6 +386,138 @@ function cumulativeHtml(runs) {
     </div>`;
 }
 
+// ---------------------------------------------------------- calibration
+// Does Jev's confidence score PREDICT whether its move is right? That is the
+// question that decides whether the score can be trusted, so it is answered
+// from JEV'S OWN moves only — never from what the walk played.
+//
+// The distinction is the whole point. A red step always plays the correct move,
+// so grading the moves we played would score low confidence at 100% for exactly
+// the reason we stopped trusting it. Only Jev's own answers can say whether its
+// confidence tracks its accuracy.
+const CAL_MIN_N = 20;   // confident steps needed before the score is called reliable
+
+const CAL_BANDS = [
+  ['high', 'high'],
+  ['medium', 'medium'],
+  ['low', 'low'],
+  ['unknown', 'no score given'],
+];
+
+function calibration(runs) {
+  const acc = new Map(CAL_BANDS.map(([k]) => [k, { n: 0, right: 0 }]));
+  let used = 0, skipped = 0, steps = 0;
+  for (const r of runs) {
+    const cb = Array.isArray(r.confidenceBands) ? r.confidenceBands : null;
+    let jf = Array.isArray(r.jevFlags) ? r.jevFlags : null;
+    // Runs from before the override existed: every move applied was Jev's own,
+    // so the stored stepFlags ARE its own correctness. Only trusted when the run
+    // carries no verdicts — once it does, stepFlags grades what we played.
+    if (!jf && !Array.isArray(r.stepVerdicts) && Array.isArray(r.stepFlags)) jf = r.stepFlags;
+    if (!cb || !jf) { skipped++; continue; }
+    used++;
+    const n = Math.min(cb.length, jf.length);
+    for (let i = 0; i < n; i++) {
+      const a = acc.get(cb[i]);
+      if (!a) continue;
+      const f = jf[i];
+      // null means Jev gave no usable answer — no prediction was made, so it is
+      // neither a hit nor a miss. Counting silence as a miss would slander the
+      // score; counting it as a hit would flatter it.
+      if (f === null || f === undefined) continue;
+      a.n++;
+      if (f === true) a.right++;
+      steps++;
+    }
+  }
+  return { acc, used, skipped, steps };
+}
+
+function calibVerdict(c) {
+  const high = c.acc.get('high');
+  const med = c.acc.get('medium');
+  const low = c.acc.get('low');
+  const rate = (b) => (b && b.n ? b.right / b.n : null);
+  const pHigh = rate(high);
+  const pLow = rate(low);
+
+  if (!high || !high.n) {
+    return {
+      tone: 'none',
+      head: 'No confident steps recorded yet',
+      body: 'Nothing to calibrate — Jev has not reported a high-confidence move in the runs shown.',
+    };
+  }
+
+  const misses = high.n - high.right;
+  const sep = (pHigh !== null && pLow !== null) ? pHigh - pLow : null;
+  const sepLine = sep === null
+    ? ''
+    : sep > 0.05
+      ? ` High beats low by ${Math.round(sep * 100)} points, so the score does separate the two.`
+      : sep < -0.05
+        ? ` Low is actually ahead of high by ${Math.round(-sep * 100)} points — the score points the wrong way.`
+        : ' High and low are level, so the score does not separate the two at all.';
+
+  if (misses === 0 && high.n >= CAL_MIN_N) {
+    return {
+      tone: 'good',
+      head: `High confidence has been right every time — ${high.right}/${high.n}`,
+      body: `On this evidence the score is reliable: a confident move can be acted on.${sepLine}`,
+    };
+  }
+  if (misses === 0) {
+    return {
+      tone: 'thin',
+      head: `High confidence is right so far — ${high.right}/${high.n}, no misses`,
+      body: `${high.n} confident step${high.n === 1 ? '' : 's'} is below the ${CAL_MIN_N} needed before the score is called reliable. Suggestive, not yet conclusive — keep running.${sepLine}`,
+    };
+  }
+  return {
+    tone: 'bad',
+    head: `High confidence has been wrong ${misses} of ${high.n} times`,
+    body: `A confident move is not a guarantee — the score is a hint, not a promise.${sepLine}`,
+  };
+}
+
+function calibHtml(runs) {
+  const c = calibration(runs);
+  const v = calibVerdict(c);
+  const bar = (b) => {
+    if (!b.n) return '<span class="dim">—</span>';
+    const p = Math.round((b.right / b.n) * 100);
+    return `<span class="cal-bar"><i style="width:${p}%"></i></span><span class="cal-pct">${p}%</span>`;
+  };
+  const rows = CAL_BANDS.map(([key, label]) => {
+    const b = c.acc.get(key);
+    return `<tr class="${key}">
+      <td class="nowrap">${escapeHtml(label)}</td>
+      <td class="nowrap">${b.n || '<span class="dim">0</span>'}</td>
+      <td class="nowrap">${b.n ? `${b.right} / ${b.n}` : '<span class="dim">—</span>'}</td>
+      <td class="nowrap cal-bar-cell">${bar(b)}</td>
+    </tr>`;
+  }).join('');
+
+  const coverage = c.used === 0
+    ? 'No runs in the current view carry confidence data.'
+    : `Over ${c.steps} step${c.steps === 1 ? '' : 's'} from ${c.used} run${c.used === 1 ? '' : 's'}`
+      + (c.skipped ? ` — ${c.skipped} shown run${c.skipped === 1 ? '' : 's'} carry no per-step confidence and are excluded.` : '.');
+
+  return `
+    <div class="calib-head ${v.tone}">
+      <span class="calib-mark">${v.tone === 'good' ? '✓' : v.tone === 'bad' ? '✗' : v.tone === 'thin' ? '·' : '—'}</span>
+      <div>
+        <div class="calib-title">${escapeHtml(v.head)}</div>
+        <div class="calib-body">${escapeHtml(v.body)}</div>
+      </div>
+    </div>
+    <table class="calib-table">
+      <thead><tr><th>confidence</th><th>steps</th><th>right</th><th>accuracy</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="calib-note">${coverage}</div>`;
+}
+
 // ------------------------------------------------------------------ render
 function render() {
   populateFilters();
@@ -404,6 +536,7 @@ function render() {
     $('stats').innerHTML = emptyState;
     $('cum-grid').innerHTML = '';
     $('cum-note').textContent = '';
+    if ($('calib-grid')) $('calib-grid').innerHTML = '';
     renderTable([]);
     return;
   }
@@ -415,6 +548,9 @@ function render() {
     groups.get(k).push(r);
   }
   $('stats').innerHTML = statGridHtml([...groups.entries()]);
+  // Calibration first: whether the confidence score can be trusted is the
+  // question the rest of the page exists to answer.
+  if ($('calib-grid')) $('calib-grid').innerHTML = calibHtml(filtered);
   $('cum-grid').innerHTML = cumulativeHtml(filtered);
   $('cum-note').textContent = `Totals over the ${filtered.length} run(s) currently shown`
     + (filtered.length !== allRuns.length ? ` (of ${allRuns.length} recorded — clear the filters to see everything).` : '.');

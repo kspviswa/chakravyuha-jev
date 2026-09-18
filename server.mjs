@@ -359,6 +359,15 @@ export function normaliseRunRecord(input) {
     if ('stepFlags' in src && Array.isArray(src.stepFlags)) {
       rec.stepFlags = src.stepFlags.filter((f) => typeof f === 'boolean').slice(0, 5000);
     }
+    // Per-step Jev correctness, positionally aligned with confidenceBands. null
+    // is kept: it means "Jev gave no usable answer here", which is a different
+    // fact from "Jev answered and was wrong" — and calibration must not treat
+    // silence as a miss, or as a hit.
+    if ('jevFlags' in src && Array.isArray(src.jevFlags)) {
+      rec.jevFlags = src.jevFlags
+        .slice(0, 5000)
+        .map((f) => (typeof f === 'boolean' ? f : null));
+    }
     // The path's colours, in order. Whitelisted by value for the same reason the
     // band names are: a hand-made POST must not be able to write arbitrary
     // strings into the history.

@@ -125,8 +125,11 @@ The accumulating run history (`runs.jsonl`, append-only, capped at the most rece
 - `GET` — `{ runs: [ … ], count: n }`, newest first.
 - `DELETE` — clears the file. Returns `{ ok: true, cleared: n }`.
 
-Record shape (all fields validated). `stepVerdicts` is the path's colour per
-step — **green** where the model's own move was played, **red** where the walk
+Record shape (all fields validated). `jevFlags` records, per step, whether
+**Jev's own** proposed move was right (`null` = it gave no usable answer) and is
+the input to the calibration on the History page; `stepFlags` grades the move
+actually applied, which is a different thing once the walk can overrule.
+`stepVerdicts` is the path's colour per step — **green** where the model's own move was played, **red** where the walk
 took the correct move instead — and is positionally aligned with
 `confidenceBands` and `stepFlags`:
 
@@ -143,6 +146,7 @@ took the correct move instead — and is positionally aligned with
   "costUsd": 0.000256,
   "stepAccuracy": 1.0, "correctSteps": 12, "moves": ["inward", "clockwise", …],
   "stepVerdicts": ["green", "red", …], "greenSteps": 9, "redSteps": 3,
+  "jevFlags": [true, false, null, …],
   "confidenceBands": ["high", "low", …], "confidentSteps": 9, "unsureSteps": 3,
   "jevProposed": 12, "jevCorrect": 10, "jevAccuracy": 0.833,
   "elapsedMs": 4200,

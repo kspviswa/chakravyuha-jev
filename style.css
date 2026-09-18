@@ -135,6 +135,39 @@ button:disabled{opacity:.5;cursor:progress}
 .conf-bar i.red{background:var(--warn)}
 .conf-note{font-size:11.5px;color:var(--dim);margin-top:7px}
 
+/* ---- calibration: does the confidence score predict accuracy? -------------- */
+.calib-grid{margin-top:4px}
+.calib-head{display:flex;gap:12px;align-items:flex-start;background:#12151d;border:1px solid var(--line);
+  border-left-width:3px;border-radius:10px;padding:12px 14px}
+.calib-head.good{border-left-color:var(--accent)}
+.calib-head.bad{border-left-color:var(--warn)}
+.calib-head.thin{border-left-color:#d9a441}
+.calib-head.none{border-left-color:#3a4050}
+.calib-mark{font-size:18px;line-height:1.2;font-weight:700}
+.calib-head.good .calib-mark{color:var(--accent)}
+.calib-head.bad .calib-mark{color:var(--warn)}
+.calib-head.thin .calib-mark{color:#d9a441}
+.calib-head.none .calib-mark{color:var(--dim)}
+.calib-title{font-size:15px;font-weight:600;color:var(--text)}
+.calib-body{font-size:12px;color:var(--dim);margin-top:4px;line-height:1.5}
+.calib-table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono);margin-top:12px}
+.calib-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);
+  font-weight:600;padding:4px 6px;border-bottom:1px solid var(--line)}
+.calib-table td{padding:4px 6px;border-bottom:1px solid rgba(42,49,64,.5);vertical-align:middle}
+.calib-table tr:last-child td{border-bottom:none}
+.calib-table tr.high td:first-child{color:var(--accent)}
+.calib-table tr.low td:first-child{color:var(--warn)}
+.calib-bar-cell{width:45%}
+.cal-bar{display:inline-block;width:calc(100% - 46px);height:7px;border-radius:4px;background:#22262f;
+  overflow:hidden;vertical-align:middle}
+.cal-bar i{display:block;height:100%;background:var(--accent)}
+.calib-table tr.low .cal-bar i{background:var(--warn)}
+.calib-table tr.medium .cal-bar i{background:#d9a441}
+.cal-pct{display:inline-block;width:40px;text-align:right;vertical-align:middle}
+.calib-note{font-size:11.5px;color:var(--dim);margin-top:9px}
+.calib-table tr.unknown td{color:var(--dim)}
+.calib-table tr.unknown .cal-bar i{background:#3a4050}
+
 /* ---- per-step details ------------------------------------------------------ */
 .steps-table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
 .steps-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;

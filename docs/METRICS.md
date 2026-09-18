@@ -70,6 +70,37 @@ shortened the distance to the centre. Since a red step always plays the correct
 move, `stepAccuracy` (the walk's own record) sits at 1.0 unless a **green** step
 went astray — the interesting case, where the model was confident and wrong.
 
+## Calibration: can the confidence score be trusted?
+
+The History page answers this directly, and it is the question the whole
+confidence capture exists to settle: **does a high confidence score predict a
+right move?**
+
+It is computed from **Jev's own moves only**, never from what the walk played.
+The distinction is the point: a red step always plays the correct move, so
+grading the moves we played would score low confidence at 100% for exactly the
+reason we stopped trusting it. `jevFlags` — per-step, was *Jev's* answer right —
+is the input; `stepFlags`, which grades the move applied, is not.
+
+| per step | |
+|---|---|
+| `confidenceBands` | the band at the moment of the decision: `high` / `medium` / `low` / `unknown` |
+| `jevFlags` | was Jev's own move right — `true` / `false` / `null` |
+
+`null` means Jev gave no usable answer. It is excluded from both numerator and
+denominator: counting silence as a miss would slander the score, counting it as
+a hit would flatter it.
+
+The page reports, per band, the step count and the hit rate, and then a verdict.
+It refuses to overclaim: a flawless record under `CAL_MIN_N` (20) confident steps
+is reported as *suggestive, not yet conclusive*, not as reliable. It also reports
+whether the score **separates** high from low — a score that ranks high below low
+is worse than no score, and says so.
+
+Runs recorded before the override existed have no `jevFlags`, but every move they
+applied *was* Jev's own, so their `stepFlags` are recovered as a fallback. That
+fallback is refused once a run carries `stepVerdicts`, for the reason above.
+
 ## Outcomes
 
 Because the walk can always overrule a bad answer, an unreadable or unplayable
