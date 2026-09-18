@@ -132,7 +132,7 @@ button:disabled{opacity:.5;cursor:progress}
 .conf-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#22262f;margin-top:8px}
 .conf-bar i{display:block;height:100%}
 .conf-bar i.green{background:var(--accent)}
-.conf-bar i.red{background:var(--warn)}
+.conf-bar i.red{background:var(--bad)}
 .conf-note{font-size:11.5px;color:var(--dim);margin-top:7px}
 
 /* ---- calibration: does the confidence score predict accuracy? -------------- */
@@ -140,12 +140,12 @@ button:disabled{opacity:.5;cursor:progress}
 .calib-head{display:flex;gap:12px;align-items:flex-start;background:#12151d;border:1px solid var(--line);
   border-left-width:3px;border-radius:10px;padding:12px 14px}
 .calib-head.good{border-left-color:var(--accent)}
-.calib-head.bad{border-left-color:var(--warn)}
+.calib-head.bad{border-left-color:var(--bad)}
 .calib-head.thin{border-left-color:#d9a441}
 .calib-head.none{border-left-color:#3a4050}
 .calib-mark{font-size:18px;line-height:1.2;font-weight:700}
 .calib-head.good .calib-mark{color:var(--accent)}
-.calib-head.bad .calib-mark{color:var(--warn)}
+.calib-head.bad .calib-mark{color:var(--bad)}
 .calib-head.thin .calib-mark{color:#d9a441}
 .calib-head.none .calib-mark{color:var(--dim)}
 .calib-title{font-size:15px;font-weight:600;color:var(--text)}
@@ -156,12 +156,12 @@ button:disabled{opacity:.5;cursor:progress}
 .calib-table td{padding:4px 6px;border-bottom:1px solid rgba(42,49,64,.5);vertical-align:middle}
 .calib-table tr:last-child td{border-bottom:none}
 .calib-table tr.high td:first-child{color:var(--accent)}
-.calib-table tr.low td:first-child{color:var(--warn)}
+.calib-table tr.low td:first-child{color:var(--bad)}
 .calib-bar-cell{width:45%}
 .cal-bar{display:inline-block;width:calc(100% - 46px);height:7px;border-radius:4px;background:#22262f;
   overflow:hidden;vertical-align:middle}
 .cal-bar i{display:block;height:100%;background:var(--accent)}
-.calib-table tr.low .cal-bar i{background:var(--warn)}
+.calib-table tr.low .cal-bar i{background:var(--bad)}
 .calib-table tr.medium .cal-bar i{background:#d9a441}
 .cal-pct{display:inline-block;width:40px;text-align:right;vertical-align:middle}
 .calib-note{font-size:11.5px;color:var(--dim);margin-top:9px}
@@ -177,7 +177,7 @@ button:disabled{opacity:.5;cursor:progress}
 .steps-table td.dim{color:var(--dim);font-size:11px}
 .swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle}
 .swatch.green{background:var(--accent)}
-.swatch.red{background:var(--warn)}
+.swatch.red{background:var(--bad)}
 
 .skin-result{display:flex;flex-direction:column;gap:12px}
 .eta-band{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;background:#08131c;border:1px solid #1d4a30;border-radius:10px;padding:12px}
@@ -199,7 +199,7 @@ pre{font:12px var(--mono);color:#a9b1c4;overflow:auto;max-height:280px;margin:10
 .ans .id{color:var(--dim)}
 .ans .val{color:var(--accent)}
 .ans .conf{color:#6b7280;font-size:11px}
-.ans.low .val{color:var(--warn)}
+.ans.low .val{color:var(--bad)}
 .bar{height:4px;border-radius:2px;background:#22262f;overflow:hidden;grid-column:1/-1}
 .bar i{display:block;height:100%;background:var(--accent)}
 
