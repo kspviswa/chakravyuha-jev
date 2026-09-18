@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { BANDS } from './lib/confidence.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_ROOT = __dirname;
@@ -236,6 +237,9 @@ export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 // toggle that selects between them exists to be measured, so the two must land
 // in the history as distinct records.
 const RUN_MODES = ['live', 'live-step'];
+// Imported from the single definition so the server and the walk can never
+// disagree about what a band is called.
+const CONFIDENCE_BANDS = BANDS;
 const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
@@ -328,6 +332,23 @@ export function normaliseRunRecord(input) {
     if ('reject' in src) rec.reject = optionalStr(src, 'reject', 40);
     if ('rejectDir' in src) rec.rejectDir = optionalStr(src, 'rejectDir', 40);
     if ('chainAgreement' in src) rec.chainAgreement = optionalNum(src, 'chainAgreement', 0, 1);
+    // Confidence counts: the signal the run is judged on beside its accuracy.
+    if ('confidentSteps' in src) rec.confidentSteps = optionalNum(src, 'confidentSteps', 0, 1e6);
+    if ('unsureSteps' in src) rec.unsureSteps = optionalNum(src, 'unsureSteps', 0, 1e6);
+    if ('mediumSteps' in src) rec.mediumSteps = optionalNum(src, 'mediumSteps', 0, 1e6);
+    // Per-step bands, order preserved. Only the known band names are kept, so a
+    // hand-crafted POST cannot inject arbitrary strings into the history.
+    if ('confidenceBands' in src && Array.isArray(src.confidenceBands)) {
+      rec.confidenceBands = src.confidenceBands
+        .filter((b) => typeof b === 'string' && CONFIDENCE_BANDS.includes(b))
+        .slice(0, 5000);
+    }
+    // Per-step correctness, positionally aligned with confidenceBands: index i
+    // is "was step i on a shortest route". Booleans only, so nothing else can
+    // ride in on it.
+    if ('stepFlags' in src && Array.isArray(src.stepFlags)) {
+      rec.stepFlags = src.stepFlags.filter((f) => typeof f === 'boolean').slice(0, 5000);
+    }
     if ('chainAnswered' in src) rec.chainAnswered = optionalNum(src, 'chainAnswered', 0, 1e6);
     if ('chainApplied' in src) rec.chainApplied = optionalNum(src, 'chainApplied', 0, 1e6);
     if ('pathCalls' in src) rec.pathCalls = optionalNum(src, 'pathCalls', 0, 1e6);

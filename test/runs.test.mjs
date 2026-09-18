@@ -391,3 +391,40 @@ test('the build tag is stored, and live-step is an accepted mode', async () => {
     await stopServer(ctx);
   }
 });
+
+test('confidence: the bands and per-step flags are stored, sanitised', async () => {
+  // The signal the run is judged on beside its accuracy. Both arrays are
+  // whitelisted by value, so a hand-made POST cannot push arbitrary strings or
+  // non-booleans into the history.
+  const ctx = await startServer({ runsFile: scratchFile() });
+  try {
+    const { status, body } = await postRun(ctx.base, {
+      ...VALID_RUN,
+      confidentSteps: 6, unsureSteps: 2, mediumSteps: 1,
+      confidenceBands: ['high', 'low', 'high', 'bogus', 'medium'],
+      stepFlags: [true, false, true, 'yes', 1, null, false],
+    });
+    assert.equal(status, 201);
+    assert.equal(body.confidentSteps, 6);
+    assert.equal(body.unsureSteps, 2);
+    assert.deepEqual(body.confidenceBands, ['high', 'low', 'high', 'medium'],
+      'unknown band names are dropped, the rest keep their order');
+    assert.deepEqual(body.stepFlags, [true, false, true, false],
+      'only booleans survive');
+  } finally {
+    await stopServer(ctx);
+  }
+});
+
+test('confidence: counts are clamped, and absent fields stay absent', async () => {
+  const ctx = await startServer({ runsFile: scratchFile() });
+  try {
+    const { body } = await postRun(ctx.base, { ...VALID_RUN, confidentSteps: -5 });
+    assert.equal(body.confidentSteps, 0, 'a negative count clamps to 0');
+    const { body: b2 } = await postRun(ctx.base, { ...VALID_RUN });
+    assert.equal(b2.confidentSteps, undefined, 'an absent count is not invented');
+    assert.equal(b2.confidenceBands, undefined);
+  } finally {
+    await stopServer(ctx);
+  }
+});

@@ -56,6 +56,19 @@ function summarise(mode) {
   if (!rs.length) return null;
   const reached = rs.filter((r) => r.outcome === 'reached');
   const graded = rs.filter((r) => typeof r.stepAccuracy === 'number');
+  // Confidence as a signal: of every step in these runs, how many were taken
+  // with a clear read — and, of those, how many were actually right.
+  const conf = { high: { n: 0, right: 0 }, medium: { n: 0, right: 0 }, low: { n: 0, right: 0 }, unknown: { n: 0, right: 0 } };
+  for (const r of rs) {
+    const bands = Array.isArray(r.confidenceBands) ? r.confidenceBands : null;
+    const flags = Array.isArray(r.stepFlags) ? r.stepFlags : null;
+    if (!bands) continue;
+    for (let i = 0; i < bands.length; i++) {
+      const b = conf[bands[i]] ? bands[i] : 'unknown';
+      conf[b].n++;
+      if (flags && flags[i] === true) conf[b].right++;
+    }
+  }
   const byDiff = {};
   for (const d of ['easy', 'medium', 'hard']) {
     const g = rs.filter((r) => r.difficulty === d);
@@ -78,6 +91,7 @@ function summarise(mode) {
     msPerStep: mean(rs.map((r) => r.msPerStep).filter((n) => typeof n === 'number')),
     costPerRun: mean(rs.map((r) => r.costUsd).filter((n) => typeof n === 'number')),
     repairs: mean(rs.map((r) => r.repairs).filter((n) => typeof n === 'number')),
+    conf,
     byDiff,
   };
 }
@@ -119,6 +133,14 @@ for (const s of out) {
   console.log(`   ms per step        : ${num(s.msPerStep, 0)}`);
   console.log(`   cost per run       : $${(s.costPerRun ?? 0).toFixed(5)}`);
   console.log(`   repairs per run    : ${num(s.repairs, 2)}`);
+  const ct = s.conf;
+  const bandLine = ['high', 'medium', 'low', 'unknown']
+    .filter((b) => ct[b].n > 0)
+    .map((b) => `${b} ${ct[b].n} step${ct[b].n === 1 ? '' : 's'} (${pct(ct[b].n ? ct[b].right / ct[b].n : null)} right)`);
+  if (bandLine.length) {
+    console.log(`   confidence         : ${bandLine.join('  ·  ')}`);
+    console.log('                        ← does certainty track correctness? if high ≈ low, the signal is not worth gating on');
+  }
   for (const d of ['easy', 'medium', 'hard']) {
     const g = s.byDiff[d];
     if (!g) continue;

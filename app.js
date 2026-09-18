@@ -21,7 +21,7 @@ import {
   askJev, runPolicyGame, buildPolicyBody,
   chakraPolicyQuestions, policyCells,
 } from './lib/jev.js';
-import { boardHash, computeStepAccuracy, optimalRoute, chakraPolicyState } from './lib/chakra.js';
+import { boardHash, computeStepAccuracy, stepCorrectness, optimalRoute, chakraPolicyState } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
 import { APP_VERSION } from './lib/version.js';
 
@@ -173,6 +173,12 @@ async function askPolicy(key) {
   game._stepAccuracy = (game.outcome === 'reached' || game.outcome === 'stuck')
     ? computeStepAccuracy(board, game.moves, board.src)
     : null;
+  // Per-step correctness, kept alongside the per-step confidence band. Together
+  // they answer the question that decides whether confidence is worth gating on:
+  // are the moves Jev was sure about actually the ones it got right?
+  game._stepFlags = (game.outcome === 'reached' || game.outcome === 'stuck')
+    ? stepCorrectness(board, game.moves, board.src)
+    : null;
   currentSkin.render();
   renderMeters(body, game, v, elapsedMs);
   setRunOutcome(game, v);
@@ -263,7 +269,15 @@ function setRunOutcome(game, v) {
   el.classList.remove('reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error');
   const calls = Array.isArray(game.calls) ? game.calls.length : 0;
   const rep = game.repairs ? ` · ${game.repairs} repair${game.repairs === 1 ? '' : 's'}` : '';
-  const prefix = `${calls} call${calls === 1 ? '' : 's'}${rep}`;
+  // Confidence is a signal in its own right, so it appears on EVERY outcome, not
+  // only on success. "y of x steps confident" is the second number a run is read
+  // by — a centre reached in 9 hesitant moves is a different result from one
+  // reached in 9 certain ones.
+  const bc = game.bandCounts;
+  const conf = bc && bc.total
+    ? ` · ${bc.high}/${bc.total} steps confident${bc.low ? ` · ${bc.low} unsure` : ''}`
+    : '';
+  const prefix = `${calls} call${calls === 1 ? '' : 's'}${rep}${conf}`;
   if (game.outcome === 'reached') {
     el.classList.add('reached');
     const optimalNote = v && v.optimal !== null ? ` · ${v.optimal} optimal` : '';
@@ -354,6 +368,15 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
     cellsAsked: game ? game.cellsAsked : null,
     repairs: game ? game.repairs : null,
     mismatchCount: game ? game.mismatchCount : null,
+    // Confidence as its own signal. `confidentSteps` of `steps` were taken with
+    // the model reporting a clear read; `confidenceBands` keeps the order, so a
+    // run can be replayed band by band and a lucky confident run told apart
+    // from a hesitant one that happened to arrive.
+    confidentSteps: game && game.bandCounts ? game.bandCounts.high : null,
+    unsureSteps: game && game.bandCounts ? game.bandCounts.low : null,
+    mediumSteps: game && game.bandCounts ? game.bandCounts.medium : null,
+    confidenceBands: game ? game.confidenceBands : null,
+    stepFlags: game ? game._stepFlags : null,
     model: body.model || null,
   };
 }
