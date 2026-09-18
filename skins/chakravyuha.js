@@ -160,18 +160,22 @@ export const chakraSkin = {
     });
   },
 
-  check(moves) {
-    return { reached: this._checkReached(moves), steps: moves.length, optimal: this._optimalLength() };
-  },
-
-  _checkReached(moves) {
-    // Simple reach check: did the last move land on the centre?
-    const last = moves[moves.length - 1];
-    return last === 'inward' && this.pos.ring === 0;
-  },
-
-  _optimalLength() {
-    return null;
+  /**
+   * Post-run grading. The shell has already finished the run and — only now —
+   * looked up the shortest route, which it passes in. The skin never searches.
+   * The verdict is CACHED on `this` so the overlay draws and _publishHook
+   * exposes it; without that the comparison route would never appear.
+   */
+  check(moves, opts = {}) {
+    const reached = this.pos.ring === 0 && this.pos.sector === 0;
+    this.verdict = {
+      reached,
+      steps: moves.length,
+      optimal: opts.optimal ?? null,
+      optimalPath: opts.optimalPath ?? null,
+      optimalFromHere: opts.optimalFromHere ?? null,
+    };
+    return this.verdict;
   },
 
   /** Post-run overlay: the shortest route, drawn only now. */

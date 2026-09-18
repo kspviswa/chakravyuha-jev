@@ -21,7 +21,7 @@ import {
   askJev, runPolicyGame, buildPolicyBody,
   buildPolicyChakraState,
 } from './lib/jev.js';
-import { boardHash, computeStepAccuracy } from './lib/chakra.js';
+import { boardHash, computeStepAccuracy, optimalRoute } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
@@ -140,23 +140,24 @@ async function askPolicy(key) {
 
   lastRun = { sent: { mode: 'policy', skin: currentSkin.id, game }, received: body };
   renderAnswers(body);
-  const moves = answerMoves(body.answers);
-  const v = currentSkin.check(moves);
+  // The run is over: only NOW may the shell look at the route.
+  const routeFromSrc = optimalRoute(board, board.src, board.dst);
+  const routeFromHere = optimalRoute(board, currentSkin.pos, board.dst);
+  const v = currentSkin.check(game.moves, {
+    optimal: routeFromSrc ? routeFromSrc.length : null,
+    optimalPath: routeFromSrc ? routeFromSrc.path : null,
+    optimalFromHere: routeFromHere ? routeFromHere.length : null,
+  });
+  // One honest measure of judgment: the fraction of steps that shortened the
+  // distance to the centre by exactly one. Computed once, reused everywhere.
+  game._stepAccuracy = (game.outcome === 'reached' || game.outcome === 'stuck')
+    ? computeStepAccuracy(board, game.moves, board.src)
+    : null;
   currentSkin.render();
   renderMeters(body, game, v, elapsedMs);
   setRunOutcome(game, v);
   recordRun({ game, v, body, elapsedMs });
   return true;
-}
-
-/** Extract moves from the new answer format. */
-function answerMoves(answers) {
-  if (!answers) return [];
-  const moves = [];
-  for (const [k, v] of Object.entries(answers)) {
-    if (k.startsWith('step_') && v?.choice) moves.push(v.choice);
-  }
-  return moves.sort((a, b) => num(a.slice(5)) - num(b.slice(5)));
 }
 
 function renderAnswers(res) {
@@ -195,9 +196,7 @@ const fmt = (n, dp = 1) => (Number.isFinite(n) ? n.toFixed(dp) : '—');
 function renderMeters(body, game, v, elapsedMs) {
   const steps = game.steps;
   const optimal = v ? v.optimal : null;
-  const stepAccuracy = game.outcome === 'reached' || game.outcome === 'stuck'
-    ? computeStepAccuracy(game.board, game.moves, game.board.src)
-    : null;
+  const stepAccuracy = game._stepAccuracy ?? null;
 
   $('m-decision').textContent = `${game.lastMs ?? '?'} ms`;
   $('m-total').textContent = `${game.totalMs ?? '?'} ms`;
@@ -240,7 +239,9 @@ function setRunOutcome(game, v) {
     el.textContent = `${prefix} · reached the centre${optimalNote} · ${game.steps} steps`;
   } else if (game.outcome === 'stuck') {
     el.classList.add('stuck');
-    const optLen = v && v.optimal !== null ? `the shortest route from there was ${v.optimal} moves` : '';
+    const optLen = v && v.optimalFromHere !== null && v.optimalFromHere !== undefined
+      ? `the shortest route from there was ${v.optimalFromHere} moves`
+      : '';
     const correctSteps = Math.round((game._stepAccuracy || 0) * game.steps);
     el.textContent = `${prefix} · STUCK at step ${game.steps} · ${optLen} · ${correctSteps}/${game.steps} steps on a shortest route`;
   } else if (game.outcome === 'unparsed') {

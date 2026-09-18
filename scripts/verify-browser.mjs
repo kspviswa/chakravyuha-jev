@@ -40,9 +40,9 @@ let failures = 0;
 
 // ------------------------------------------------- a mock Jev (no stub, ever)
 // The app has no local solver, so the harness stands up a real HTTP upstream
-// and points the shim at it. It answers the polar move questions using the
-// referee — which is allowed here because this file is the *test model*, not
-// the app.
+// and points the shim at it. It answers the one `next_move` question per step
+// by looking up the shortest route — which is allowed here because this file is
+// the *test model*, not the app. The app itself never searches.
 function startMockJev() {
   let calls = 0;
   const server = http.createServer((req, res) => {
@@ -65,16 +65,17 @@ function startMockJev() {
         const visitedSet = new Set(visited.map((v) => `${v.ring},${v.sector}`));
         const candidates = legalCandidates(board, here.ring, here.sector);
         const fresh = candidates.filter((c) => !visitedSet.has(`${c.ring},${c.sector}`));
-        // Find the first move of a shortest route
+        // The first move of a shortest route. NB: shortest() returns path cells
+        // as { ring, sector } with NO `dir` field — the direction must be read
+        // back off the fresh candidate that lands on that cell. (Reading
+        // `next.dir` directly yields undefined, which the app then honestly
+        // reports as UNPARSED.)
         const s = shortest(board, here, board.dst);
         const next = s ? s.path[1] : null;
-        const criteria = {};
-        const parts = [];
-        for (const c of fresh) {
-          criteria[c.dir] = `${c.dir} to ring ${c.ring}, sector ${c.sector}`;
-          parts.push(`${c.dir} → ring ${c.ring}, sector ${c.sector}`);
-        }
-        const choice = next ? next.dir : fresh[0]?.dir || 'inward';
+        const chosen = next
+          ? fresh.find((c) => c.ring === next.ring && c.sector === next.sector)
+          : null;
+        const choice = chosen?.dir ?? fresh[0]?.dir ?? 'inward';
         answers.next_move = {
           type: 'choice', choice,
           probabilities: { [choice]: 0.95 },
@@ -263,12 +264,12 @@ async function runViewport(cdp, base, vp, route) {
 
   // ---- NOTHING is solved on load -----------------------------------------
   const idle = await evaluate(cdp, RENDER_PROBE);
-  const idleRef = await evaluate(cdp, `(document.getElementById('referee') || {}).innerText || ''`);
+  const idleOutcome = await evaluate(cdp, `(() => { const el = document.getElementById('run-outcome'); return el && !el.hidden ? el.innerText : ''; })()`);
   if (idle.verdict) throw new Error('a verdict exists on load — something was solved without pressing Ask Jev');
   if (idle.atCentre) throw new Error('Abhimanyu is at the centre on load');
   if (idle.steps !== 0) throw new Error(`the trail has ${idle.steps} steps on load`);
   if (idle.pos.ring !== idle.rings) throw new Error(`the sprite should start on the outermost ring, got ${idle.pos.ring}`);
-  if (/reaches the centre/.test(idleRef)) throw new Error('the referee ran on load');
+  if (idleOutcome) throw new Error(`the outcome banner is showing on load: ${JSON.stringify(idleOutcome)}`);
   console.log(`  idle on load: ${idle.rings} rings, ${idle.warriors} warriors, sprite on the outer ring, no verdict: ok`);
 
   // ---- switching difficulty must not solve anything either ----------------
@@ -383,10 +384,12 @@ async function runViewport(cdp, base, vp, route) {
   if (!/^\d+ \/ \d+$/.test(meters.steps)) throw new Error(`steps-vs-optimal should read "n / m", got ${meters.steps}`);
   console.log(`  meters: ${meters.calls} calls, ${meters.total}, ${meters.steps} steps, ${meters.msStep} per step: ok`);
 
-  // the referee's comparison route appears only AFTER the run
-  const refText = await evaluate(cdp, `document.getElementById('referee').innerText`);
-  if (!/reaches the centre/.test(refText)) throw new Error('the referee panel did not grade the run');
-  console.log('  referee graded the finished run: ok');
+  // the outcome banner and the step-accuracy meter appear only AFTER the run
+  const banner = await evaluate(cdp, `(() => { const el = document.getElementById('run-outcome'); return el && !el.hidden ? el.innerText : ''; })()`);
+  if (!/reached the centre/.test(banner)) throw new Error(`the outcome banner did not report the finish (got ${JSON.stringify(banner)})`);
+  const stepAcc = await evaluate(cdp, `document.getElementById('m-stepacc').textContent`);
+  if (!/\d\.\d\d \(\d+\/\d+\)/.test(stepAcc)) throw new Error(`the step-accuracy meter was not populated (got ${JSON.stringify(stepAcc)})`);
+  console.log(`  outcome banner graded the run (${banner.replace(/\s+/g, ' ').slice(0, 70)}), step accuracy ${stepAcc}: ok`);
 
   if (route.name === 'root') await shot(cdp, `anim-settled-${vp.name}`);
 
@@ -420,7 +423,7 @@ async function runViewport(cdp, base, vp, route) {
   // §9: the cumulative footer — totals including total tokens and $ spent, plus
   // mean ± sample stddev.
   if (!(hist.cumTiles >= 10)) throw new Error(`the cumulative footer is missing tiles (${hist.cumTiles})`);
-  for (const want of ['total spent', 'total tokens', 'ms / step', 'questions / step', 'optimality']) {
+  for (const want of ['total spent', 'total tokens', 'ms / step', 'questions / step', 'step accuracy']) {
     if (!hist.cumText.toLowerCase().includes(want)) {
       throw new Error(`the cumulative footer is missing "${want}" (got: ${hist.cumText.replace(/\n/g, ' | ')})`);
     }
