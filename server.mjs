@@ -226,13 +226,16 @@ export function decorateResponse(out, payload, ms) {
 // (runs.jsonl.tmp → rename) dropping the oldest. A corrupt line is skipped.
 // Validation is strictly whitelist-based: unknown keys are dropped, secret-ish
 // field names are dropped (and noted), numbers are Number.isFinite-checked and
-// clamped, strings are length-capped. The record MUST be `mode: "live"` — the
-// app is live-only, so anything else is rejected on purpose.
+// clamped, strings are length-capped. The record's `mode` MUST be one of
+// RUN_MODES below — the app is live-only, so anything else is rejected on purpose.
 
 export const RUNS_CAP = 500;
 export const RUN_RECORD_MAX_BYTES = 8 * 1024;
 
-const RUN_MODES = ['live'];
+// `live` = the whole policy in one call; `live-step` = one cell per call. The
+// toggle that selects between them exists to be measured, so the two must land
+// in the history as distinct records.
+const RUN_MODES = ['live', 'live-step'];
 const RUN_OUTCOMES = ['reached', 'stuck', 'unparsed', 'illegal', 'revisited', 'exhausted', 'error'];
 const RUN_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const SECRET_FIELD = /key|token|secret|auth/i;
@@ -321,6 +324,7 @@ export function normaliseRunRecord(input) {
     if ('moves' in src && Array.isArray(src.moves)) rec.moves = src.moves;
     if ('boardHash' in src) rec.boardHash = optionalStr(src, 'boardHash', 200);
     if ('model' in src) rec.model = optionalStr(src, 'model', 200);
+    if ('build' in src) rec.build = optionalStr(src, 'build', 40);
     if ('reject' in src) rec.reject = optionalStr(src, 'reject', 40);
     if ('rejectDir' in src) rec.rejectDir = optionalStr(src, 'rejectDir', 40);
     if ('chainAgreement' in src) rec.chainAgreement = optionalNum(src, 'chainAgreement', 0, 1);

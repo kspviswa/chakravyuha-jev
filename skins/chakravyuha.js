@@ -38,6 +38,8 @@ export const chakraSkin = {
   id: 'chakravyuha',
   label: 'Chakravyuha',
   weighted: false,
+  // Ask mode: false = the whole policy in one call, true = one cell per call.
+  stepByStep: false,
 
   _currentRuntime: null,
 
@@ -52,6 +54,7 @@ export const chakraSkin = {
       <div class="cta-row">
         <button id="maze-new" class="ghost" type="button">⟳ New maze</button>
         <label class="check"><input type="checkbox" id="maze-instant" /> instant moves</label>
+        <label class="check"><input type="checkbox" id="maze-step" /> step by step</label>
         <label class="check"><input type="checkbox" id="maze-warriors" /> obstacles (warriors)</label>
       </div>`;
     container.appendChild(wrap);
@@ -77,6 +80,14 @@ export const chakraSkin = {
     const instantBox = wrap.querySelector('#maze-instant');
     instantBox.checked = this.instant;
     instantBox.addEventListener('change', () => this.setInstant(instantBox.checked));
+
+    // Step-by-step toggle: ask only about the cell Abhimanyu stands on, move one
+    // step, then ask again from there. Persisted like the others, and read at ask
+    // time — flipping it mid-run is deliberately ignored, since a run must be one
+    // mode from start to finish or its numbers mean nothing.
+    const stepBox = wrap.querySelector('#maze-step');
+    stepBox.checked = this.stepByStep;
+    stepBox.addEventListener('change', () => this.setStepByStep(stepBox.checked));
 
     // Obstacle toggle: warriors on (the real game) or off (a pure wall maze, so
     // the only thing that can stop a run is a wall). Redraws immediately.
@@ -122,6 +133,12 @@ export const chakraSkin = {
     // Persisted, like the obstacles toggle — otherwise the checkbox silently
     // resets on every reload while loadInstant() reads a key nothing wrote.
     try { localStorage.setItem('jev.instant', this.instant ? '1' : '0'); } catch { /* ignore */ }
+  },
+
+  /** Step-by-step on/off. Persisted so a reload keeps the user's choice. */
+  setStepByStep(on) {
+    this.stepByStep = !!on;
+    try { localStorage.setItem('jev.step', this.stepByStep ? '1' : '0'); } catch { /* ignore */ }
   },
 
   /** Obstacles on/off. Persisted so a reload keeps the user's choice. */

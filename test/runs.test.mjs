@@ -372,3 +372,22 @@ test('DEFAULTS supplies a runsFile (so createServer({}) cannot leave it undefine
   assert.match(src, /const cfg = \{ \.\.\.DEFAULTS, \.\.\.config \}/,
     'createServer merges DEFAULTS into a partial config');
 });
+
+test('the build tag is stored, and live-step is an accepted mode', async () => {
+  // Both exist for the same reason: the history must be able to say which ask
+  // mode ran on which revision. If either were dropped, comparing them would
+  // silently compare revisions instead.
+  const ctx = await startServer({ runsFile: scratchFile() });
+  try {
+    const { status, body } = await postRun(ctx.base, {
+      ...VALID_RUN, mode: 'live-step', build: '0.4.0',
+    });
+    assert.equal(status, 201);
+    assert.equal(body.build, '0.4.0', 'the build tag survives validation');
+    assert.equal(body.mode, 'live-step', 'live-step is a valid mode');
+    const bad = await postRun(ctx.base, { ...VALID_RUN, mode: 'live-telepathy' });
+    assert.equal(bad.status, 400, 'an invented mode is still rejected');
+  } finally {
+    await stopServer(ctx);
+  }
+});

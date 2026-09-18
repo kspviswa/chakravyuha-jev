@@ -23,6 +23,7 @@ import {
 } from './lib/jev.js';
 import { boardHash, computeStepAccuracy, optimalRoute, chakraPolicyState } from './lib/chakra.js';
 import { chakraSkin } from './skins/chakravyuha.js';
+import { APP_VERSION } from './lib/version.js';
 
 const BASE = deriveBase(typeof location !== 'undefined' ? location.pathname : '/');
 const storage = typeof localStorage !== 'undefined' ? localStorage : memoryStorage();
@@ -31,6 +32,7 @@ const transport = createTransport({ base: BASE, storage });
 const DIFF_STORAGE = 'jev.difficulty';
 const INSTANT_STORAGE = 'jev.instant';
 const OBSTACLE_STORAGE = 'jev.obstacles';
+const STEP_STORAGE = 'jev.step';
 
 const currentSkin = chakraSkin;
 
@@ -101,6 +103,9 @@ async function ask() {
     btn.disabled = false;
     busy = false;
     $('cancel').hidden = true;
+    // The step trace is live progress, not a result — the outcome card carries
+    // the numbers. Return the chip to its idle state like every other mode.
+    $('mode').textContent = 'ready';
   }
   if (!ok) $('export-btn').disabled = true;
 }
@@ -108,10 +113,13 @@ async function ask() {
 async function askPolicy(key) {
   currentSkin.begin();
   const board = currentSkin.board;
+  const stepMode = currentSkin.stepByStep === true;
   $('state-pre').textContent = JSON.stringify({
-    loop: 'ask for the policy for every cell → follow it → re-ask only if the walk doubles back',
+    loop: stepMode
+      ? 'ask about the cell Abhimanyu stands on → follow that one move → ask again from there'
+      : 'ask for the policy for every cell → follow it → re-ask only if the walk doubles back',
     obstacles: currentSkin.obstacles !== false ? 'on (warriors)' : 'off (pure wall maze)',
-    cells: policyCells(board).length,
+    cells: stepMode ? 1 : policyCells(board).length,
     sampleState: chakraPolicyState(board),
     sampleQuestions: (() => {
       const q = chakraPolicyQuestions(board);
@@ -123,7 +131,15 @@ async function askPolicy(key) {
   const wall0 = performance.now();
   const game = await runPolicyGame({
     board, transport, model: 'jev-latest', key,
-    onStep: (h) => currentSkin.animateHop(h),
+    mode: stepMode ? 'step' : 'policy',
+    onStep: (h) => {
+      // Step mode: the ask and the move alternate, so name the cell being asked
+      // next — the run should read as "step 1, step 2, step 3", not as a blur.
+      if (stepMode) {
+        $('mode').textContent = `step ${h.step} · now at ring ${h.to.ring}, sector ${h.to.sector}`;
+      }
+      return currentSkin.animateHop(h);
+    },
   });
   const elapsedMs = performance.now() - wall0;
 
@@ -287,7 +303,9 @@ function setRunOutcome(game, v) {
 function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
   const board = currentSkin.board;
   if (!board || !body) return null;
-  const runMode = 'live';
+  // 'live-step' vs 'live' is the whole point of the toggle: the two must be
+  // separable in runs.jsonl, or the comparison they exist to enable is lost.
+  const runMode = game && game.mode === 'step' ? 'live-step' : 'live';
   const reached = v ? !!v.reached : (game ? !!game.reached : false);
   const optimal = v ? v.optimal : null;
   const steps = v ? v.steps : (game ? game.steps : 0);
@@ -304,6 +322,10 @@ function buildRunRecord({ game, v, body, mode, outcome, elapsedMs }) {
   return {
     difficulty: board.difficulty || loadDifficulty(),
     mode: runMode,
+    // Which build produced this run. The history outlives the code, so without
+    // this a comparison across revisions silently becomes a comparison of
+    // revisions — the one thing the toggle exists to rule out.
+    build: APP_VERSION,
     outcome: outcome || (game ? game.outcome : (v ? (v.hitWall ? 'stuck' : v.reached ? 'reached' : 'stuck') : 'error')),
     steps,
     rings: board.R,
@@ -365,6 +387,10 @@ function loadObstacles() {
   try { return storage.getItem(OBSTACLE_STORAGE) !== 'off'; } catch { return true; }
 }
 
+function loadStepByStep() {
+  try { return storage.getItem(STEP_STORAGE) === '1'; } catch { return false; }
+}
+
 // ------------------------------------------------------------------- boot
 $('ask').addEventListener('click', ask);
 $('export-btn').addEventListener('click', () => {
@@ -383,6 +409,7 @@ $('cancel').addEventListener('click', () => {
 
 refreshKeyUI();
 currentSkin.setInstant(loadInstant());
+currentSkin.setStepByStep(loadStepByStep());
 currentSkin.setDifficulty(loadDifficulty());
 currentSkin.setObstacles(loadObstacles());
 currentSkin.mount({ container: $('skin-controls') });

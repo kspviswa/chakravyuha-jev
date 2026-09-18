@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { APP_VERSION } from '../lib/version.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -146,9 +147,11 @@ test('invariant: server.mjs carries no solver at all', () => {
 });
 
 // ---- 5. package.json -------------------------------------------------------
-test('package.json: version 0.3.0 and no referee in description', () => {
+test('package.json: version matches lib/version.js, and no referee in description', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.3.0', 'version is 0.3.0');
+  // One source of truth, two places it must appear. Asserted, not assumed — a
+  // build tag that drifts from package.json is worse than no build tag.
+  assert.equal(pkg.version, APP_VERSION, 'package.json and lib/version.js must agree');
   assert.ok(!pkg.description.includes('referee'), 'no referee in description');
   assert.ok(!pkg.dependencies && !pkg.devDependencies, 'zero runtime dependencies (spec §0)');
   for (const gone of ['fixtures', 'geo-fixtures']) {

@@ -496,3 +496,145 @@ test('presets: the three difficulties are distinct and labelled', () => {
   assert.ok(CHAKRA_PRESETS.easy.warriors < CHAKRA_PRESETS.hard.warriors);
   for (const d of ds) assert.ok(/ring/.test(CHAKRA_PRESETS[d].label), `${d} has a label`);
 });
+
+// ---- step-by-step mode -----------------------------------------------------
+// The same question, asked one cell at a time: ask → move one step → ask again
+// from the new cell. The toggle exists to test whether a model that juggles 158
+// questions does better when it is handed one.
+
+test('step: the single-cell question is byte-identical to the batch one', () => {
+  // This is the fairness guarantee. If the text differed, a change in outcome
+  // could be the wording rather than the one-at-a-time ask, and the experiment
+  // would prove nothing.
+  for (const d of ['easy', 'medium', 'hard']) {
+    const b = makeChakraBoard(d, lcg(31));
+    const batch = chakraPolicyQuestions(b);
+    for (const { ring, sector } of policyCells(b)) {
+      const one = chakraPolicyQuestions(b, { cells: [{ ring, sector }] });
+      const id = `cell_${ring}_${sector}`;
+      assert.deepEqual(Object.keys(one), [id], `${d}: exactly the one cell asked about`);
+      assert.deepEqual(one[id], batch[id], `${d}/${id}: identical question, criteria and instructions`);
+    }
+  }
+});
+
+test('step: a banned move is struck from the single-cell question too', () => {
+  const b = makeChakraBoard('medium', lcg(32));
+  const cell = policyCells(b).find((c) => legalCandidates(b, c.ring, c.sector).length > 1);
+  const dir = legalCandidates(b, cell.ring, cell.sector)[0].dir;
+  const banned = new Map([[`${cell.ring},${cell.sector}`, new Set([dir])]]);
+  const one = chakraPolicyQuestions(b, { cells: [cell], banned });
+  assert.ok(!(dir in one[`cell_${cell.ring}_${cell.sector}`].criteria),
+    'the struck move is not offered');
+});
+
+test('step: a correct model reaches the centre, one cell per call', async () => {
+  for (const d of ['easy', 'medium', 'hard']) {
+    const b = makeChakraBoard(d, lcg(63));
+    const t = scriptedTransport(shortestPick);
+    const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+    assert.equal(game.outcome, 'reached', `${d}: reached`);
+    assert.equal(game.mode, 'step', `${d}: the mode is reported`);
+    assert.equal(game.repairs, 0, `${d}: no repair needed`);
+    // One call per hop, and never more — the walk must not ask about the centre.
+    assert.equal(t.calls, game.steps, `${d}: one call per step (${t.calls} calls, ${game.steps} steps)`);
+    for (const cl of game.calls) {
+      assert.equal(cl.asked, 1, `${d}: every call carried exactly one question`);
+      assert.equal(cl.answered, 1, `${d}: every call answered exactly that cell`);
+      assert.equal(cl.used, 1, `${d}: every call moved the walk exactly one step`);
+    }
+  }
+});
+
+test('step: asking one at a time is never WORSE than asking all at once', async () => {
+  // Same model, same boards. A correct model must land identically, because the
+  // route only ever depends on the cells it visits.
+  for (const d of ['easy', 'medium', 'hard']) {
+    for (let i = 0; i < 12; i++) {
+      const batch = await runPolicyGame({
+        board: makeChakraBoard(d, lcg(70 + i)), transport: scriptedTransport(shortestPick),
+      });
+      const step = await runPolicyGame({
+        board: makeChakraBoard(d, lcg(70 + i)), transport: scriptedTransport(shortestPick), mode: 'step',
+      });
+      assert.equal(step.outcome, batch.outcome, `${d}/${i}: same outcome`);
+      assert.equal(step.steps, batch.steps, `${d}/${i}: same route length`);
+      assert.deepEqual(step.moves, batch.moves, `${d}/${i}: same route`);
+    }
+  }
+});
+
+test('step: the walk never asks about a cell it is not standing on', async () => {
+  const d = 'hard';
+  const b = makeChakraBoard(d, lcg(88));
+  const asked = [];
+  const inner = scriptedTransport(shortestPick);
+  const t = { async ask(args) { asked.push(...Object.keys(args.questions)); return inner.ask(args); } };
+  const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+  assert.equal(game.outcome, 'reached');
+
+  // Replay the route to get the cell occupied before each ask. `applied[].cell`
+  // is where a move was taken FROM, so the position after step k is that move's
+  // destination — not applied[k].cell.
+  const at = [];
+  let here = { ring: b.src.ring, sector: b.src.sector };
+  for (let k = 0; k <= game.moves.length; k++) {
+    at.push(`cell_${here.ring}_${here.sector}`);
+    if (k === game.moves.length) break;
+    const c = legalCandidates(b, here.ring, here.sector).find((x) => x.dir === game.moves[k]);
+    here = { ring: c.ring, sector: c.sector };
+  }
+  // One ask per hop: the last cell is the centre, and the centre is never asked.
+  assert.equal(asked.length, at.length - 1, 'one ask per hop, never about the centre');
+  for (let i = 0; i < asked.length; i++) {
+    assert.equal(asked[i], at[i], `ask ${i + 1} must name the cell the walk stands on`);
+  }
+});
+
+test('step: no usable answer is UNREADABLE, not stuck', async () => {
+  const b = makeChakraBoard('easy', lcg(90));
+  const t = scriptedTransport(shortestPick, { skipCells: 1 });
+  const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+  assert.equal(game.outcome, 'unparsed', 'an unanswered cell is unreadable, never stuck');
+  assert.equal(game.reject, 'unreadable');
+});
+
+test('step: a doubling-back policy is still refused and repaired', async () => {
+  const b = makeChakraBoard('easy', lcg(91));
+  // Always inward: legal, but it walks into walls of the ring structure and can
+  // double back. Whatever happens, the vocabulary must match policy mode.
+  const t = scriptedTransport(alwaysInwardPick);
+  const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+  assert.ok(['reached', 'stuck', 'revisited', 'illegal', 'exhausted'].includes(game.outcome),
+    `outcome from the shared vocabulary (got ${game.outcome})`);
+  assert.ok(game.steps <= game.maxSteps, 'the step budget is respected');
+  assert.ok(t.calls <= game.maxSteps + 4, 'calls stay bounded by the step budget plus repairs');
+});
+
+test('step: a transport error ends the run as an error, after the calls it made', async () => {
+  const b = makeChakraBoard('easy', lcg(92));
+  let n = 0;
+  const t = {
+    async ask() {
+      n++;
+      if (n === 3) return { ok: false, error: { code: 'upstream_error', message: 'boom' } };
+      const inner = scriptedTransport(shortestPick);
+      return inner.ask(...arguments);
+    },
+  };
+  const game = await runPolicyGame({ board: b, transport: t, mode: 'step' });
+  assert.equal(game.outcome, 'error');
+  assert.equal(game.steps, 2, 'the two steps taken before the failure are kept');
+  assert.equal(game.error.code, 'upstream_error');
+});
+
+test('step: buildPolicyBody carries the mode and the per-step counters', async () => {
+  const b = makeChakraBoard('medium', lcg(93));
+  const game = await runPolicyGame({ board: b, transport: scriptedTransport(shortestPick), mode: 'step' });
+  const body = buildPolicyBody(game);
+  assert.equal(body._mode, 'step');
+  assert.equal(body._calls, game.steps, 'one call per step');
+  assert.equal(body._questions, game.steps, 'one question per call');
+  assert.equal(body._steps, game.steps);
+  assert.equal(Object.keys(body.answers).length, game.steps, 'one recorded move per step');
+});

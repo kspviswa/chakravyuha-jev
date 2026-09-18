@@ -1,6 +1,6 @@
 {
   "name": "chakravyuha",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Chakravyuha — a polar ring-maze where every move is a Jev decision. No pathfinding runs in the game loop: the maze is serialised to text, sent to Jev, and the move Jev picks is applied verbatim.",
